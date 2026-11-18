@@ -1,0 +1,21 @@
+{
+  "name": "steam-market-price",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Local read-only Steam market price calculator.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mindydora8023-prog/steam-market.git"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node app/server.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "node scripts/check.mjs",
+    "test:ui": "node scripts/browser-smoke.mjs"
+  }
+}

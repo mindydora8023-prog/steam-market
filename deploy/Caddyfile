@@ -1,0 +1,25 @@
+# /etc/caddy/Caddyfile  --- replace DOMAIN with your real hostname.
+# The calculator has no authentication of its own: either keep it LAN/VPN only,
+# or enable the basicauth block below.
+DOMAIN {
+	encode zstd gzip
+
+	# basic auth (recommended when reachable from the internet):
+	#   caddy hash-password --plaintext 'YOUR-PASSWORD'
+	# then paste the hash:
+	# basicauth {
+	# 	me $2a$14$REPLACE_WITH_HASH
+	# }
+
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/steam-market.log
+		format console
+	}
+}

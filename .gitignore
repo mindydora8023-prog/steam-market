@@ -1,0 +1,13 @@
+node_modules/
+.tmp-*
+*.log
+cookies.txt
+*.maFile
+*.mafile
+price-cache.json
+plans/
+logs/
+.env
+.env.*
+!.env.example
+.ui-evidence/

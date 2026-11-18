@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b141b">
+  <title>Steam 市场价格助手</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#item-name">跳到物品查询</a>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.6 13.1 13.1 20.6a2 2 0 0 1-2.8 0L3.4 13.7a2 2 0 0 1 0-2.8l7.5-7.5a2 2 0 0 1 1.4-.6H19a2 2 0 0 1 2 2v6.9a2 2 0 0 1-.4 1.4Z"/>
+          <circle cx="16.5" cy="7.5" r="1.3"/>
+          <path d="m7 14 2.5 2.5"/>
+        </svg>
+      </div>
+      <div class="brand-copy">
+        <div class="brand-line">
+          <h1>Steam 市场价格助手</h1>
+          <span class="badge">只读</span>
+        </div>
+        <p>查一个物品，算一个合适的挂单价</p>
+      </div>
+    </div>
+    <div class="network" id="network" title="本地服务状态">
+      <span class="dot" id="network-dot"></span>
+      <span id="network-text">连接中…</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <h2>查清价格，再决定怎么挂</h2>
+        <p>对比当前挂单与近期成交，算清每笔到手金额。</p>
+      </div>
+
+      <form id="quote-form" class="search-card" autocomplete="off">
+        <div class="search-grid">
+          <label class="field app-field">
+            <span>游戏</span>
+            <select id="app-select">
+              <option value="730">Counter-Strike 2</option>
+              <option value="570">Dota 2</option>
+              <option value="440">Team Fortress 2</option>
+              <option value="252490">Rust</option>
+              <option value="753">Steam 社区物品</option>
+            </select>
+          </label>
+
+          <label class="field name-field">
+            <span>物品名称</span>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-4-4"></path>
+              </svg>
+              <input id="item-name" type="text" role="combobox" maxlength="2048" placeholder="物品名称或 Steam 市场链接" aria-label="物品名称或 Steam 市场链接" aria-autocomplete="list" aria-controls="suggestions" aria-expanded="false" spellcheck="false" enterkeyhint="search">
+              <button id="clear-input" class="clear-input" type="button" aria-label="清空物品名称" hidden>清空</button>
+              <div id="suggestions" class="suggestions" role="listbox" hidden></div>
+            </div>
+            <span id="name-error" class="field-error" role="alert" hidden></span>
+          </label>
+
+          <label class="field currency-field">
+            <span>币种</span>
+            <select id="currency-select">
+              <option value="23">人民币 CNY</option>
+              <option value="1">美元 USD</option>
+              <option value="3">欧元 EUR</option>
+              <option value="2">英镑 GBP</option>
+              <option value="5">卢布 RUB</option>
+              <option value="8">日元 JPY</option>
+              <option value="7">雷亚尔 BRL</option>
+              <option value="29">港币 HKD</option>
+              <option value="30">新台币 TWD</option>
+              <option value="16">韩元 KRW</option>
+            </select>
+          </label>
+
+          <button id="calculate" class="primary" type="submit">
+            <span class="btn-label">计算价格</span>
+            <span class="spinner" hidden aria-hidden="true"></span>
+          </button>
+        </div>
+        <p id="cooldown-note" class="cooldown-note" role="status" hidden></p>
+        <div id="query-status" class="query-status" role="status" hidden><span id="query-status-text">正在查询 Steam 市场…</span><button id="cancel-query" class="ghost" type="button">取消查询</button></div>
+
+        <div class="controls">
+          <label class="inline">
+            <span>策略</span>
+            <select id="strategy-select">
+              <option value="smart">智能推荐</option>
+              <option value="undercut">压最低价</option>
+              <option value="median">参考中位价</option>
+              <option value="match">持平最低价</option>
+            </select>
+          </label>
+
+          <details class="advanced" id="advanced-settings">
+            <summary>高级设置 <span class="summary-hint">降价幅度 · 费率</span></summary>
+            <div class="advanced-body">
+              <label class="inline" id="undercut-field">
+                <span>比最低价低</span>
+                <select id="undercut-select">
+                  <option value="0">不降价</option>
+                  <option value="1" selected>1 个单位</option>
+                  <option value="2">2 个单位</option>
+                  <option value="3">3 个单位</option>
+                  <option value="5">5 个单位</option>
+                </select>
+              </label>
+
+              <div class="fees-inline">
+                <div class="fees-title">费率设置 <span id="fee-summary">Steam 5% · 发行商 10%</span></div>
+                <div class="fee-grid">
+                  <label>Steam 费率
+                    <span class="input-unit"><input id="steam-fee" type="number" min="0" max="30" step="0.5" value="5"><span>%</span></span>
+                  </label>
+                  <label>发行商费率
+                    <span class="input-unit"><input id="publisher-fee" type="number" min="0" max="30" step="0.5" value="10"><span>%</span></span>
+                  </label>
+                  <button id="reset-fees" class="ghost" type="button">恢复默认</button>
+                </div>
+              </div>
+
+              <p class="advanced-hint">智能推荐默认低 1 个单位；费率按游戏/地区可能不同，低价物品还有最低手续费。</p>
+            </div>
+          </details>
+
+          <span class="hint">只读查询，不会登录、创建挂单或交易。</span>
+        </div>
+      </form>
+    </section>
+
+    <section id="error-box" class="error-box" hidden aria-live="assertive">
+      <div class="error-icon" aria-hidden="true">!</div>
+      <div class="error-copy">
+        <h3 id="error-title">没有算出价格</h3>
+        <p id="error-text"></p>
+        <button id="retry-quote" class="ghost" type="button">重试查询</button>
+        <div id="error-suggestions" class="suggestions inline" role="listbox"></div>
+      </div>
+    </section>
+
+    <section id="result" class="result" hidden aria-live="polite">
+      <div class="result-head">
+        <div class="item-meta">
+          <div class="item-icon">
+            <img id="item-icon" alt="" loading="lazy" referrerpolicy="no-referrer">
+            <span id="item-icon-fallback" aria-hidden="true">?</span>
+          </div>
+          <div>
+            <h3 id="item-name-result"></h3>
+            <p class="muted small"><span id="item-type"></span><span id="item-app"></span></p>
+          </div>
+        </div>
+        <div class="result-tools">
+          <span id="cache-badge" class="pill" hidden>缓存</span>
+          <span id="updated" class="muted small"></span>
+          <button id="favorite-quote" class="ghost" type="button" aria-pressed="false">收藏物品</button>
+          <button id="share-quote" class="ghost" type="button">复制查询链接</button>
+          <button id="refresh-quote" class="ghost" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="result-grid">
+        <article class="card price-card">
+          <p id="result-stale" class="stale-banner" role="status" hidden>以下为上次结果，请重新计算后再使用。</p>
+          <span class="eyebrow">建议挂单价 · 买家支付</span>
+          <p id="quote-provenance" class="muted small"></p>
+          <div id="big-price" class="big-price">—</div>
+          <div id="price-sub" class="price-sub"></div>
+          <div class="receive-lead"><span>预计到手</span><strong id="receive-price">—</strong><span id="fee-share" class="muted small"></span></div>
+          <div class="price-actions">
+            <button id="copy-price" class="primary small" type="button">复制买家价</button>
+            <button id="copy-receive" class="ghost" type="button">复制到手价</button>
+            <a id="market-link" class="link" target="_blank" rel="noopener">在 Steam 市场打开 <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+
+        <article class="card stats-card">
+          <div class="stat">
+            <span>最低挂单</span>
+            <strong id="stat-lowest">—</strong>
+          </div>
+          <div class="stat">
+            <span>中位成交</span>
+            <strong id="stat-median">—</strong>
+          </div>
+          <div class="stat">
+            <span>24h 成交量</span>
+            <strong id="stat-volume">—</strong>
+          </div>
+        </article>
+      </div>
+
+      <article id="strategy-card" class="card strategy-card" hidden>
+        <div class="section-head"><h3>挂单方案对比</h3><span class="muted small">同一份行情 · 点击切换</span></div>
+        <div id="strategy-options" class="strategy-options" role="group" aria-label="挂单方案"></div>
+      </article>
+
+      <article class="card breakdown-card">
+        <div class="breakdown-head">
+          <h3>按这个价格挂出</h3>
+          <span class="muted small">费用为估算值</span>
+        </div>
+        <div class="breakdown-grid">
+          <div><span>买家支付</span><strong id="bd-buyer">—</strong></div>
+          <div><span>Steam 费</span><strong id="bd-steam">—</strong></div>
+          <div><span>发行商费</span><strong id="bd-publisher">—</strong></div>
+          <div class="accent"><span>预计到手</span><strong id="bd-receive">—</strong></div>
+        </div>
+        <div class="quantity-row"><label for="quantity">相同物品数量</label><input id="quantity" type="number" min="1" max="10000" step="1" value="1" inputmode="numeric"><span id="quantity-total" role="status"></span></div>
+        <p class="muted small">合计按每件分别计费，假设均以此价成交；实际金额以 Steam 上架页为准。</p>
+      </article>
+
+      <div id="warnings" class="warnings" hidden></div>
+
+      <article id="chart-card" class="card chart-card" hidden>
+        <div class="chart-head">
+          <div>
+            <h3>历史价格走势</h3>
+            <p class="muted small" id="chart-subtitle"></p>
+          </div>
+          <div class="range-tabs" id="chart-ranges" role="group" aria-label="历史时间范围">
+            <button type="button" data-days="30">30天</button>
+            <button type="button" data-days="90">90天</button>
+            <button type="button" data-days="180" class="active">180天</button>
+            <button type="button" data-days="365">365天</button>
+          </div>
+        </div>
+        <div id="chart-stats" class="chart-stats"></div>
+        <div class="chart-body">
+          <svg id="price-chart" class="price-chart" viewBox="0 0 800 280" role="img" tabindex="0" aria-label="历史价格走势图" aria-describedby="chart-keyboard-hint chart-selection"></svg>
+          <div id="chart-empty" class="chart-empty" hidden></div>
+        </div>
+        <p id="chart-selection" class="chart-selection" role="status"></p>
+        <p id="chart-keyboard-hint" class="muted small">触摸或悬停查看数据；键盘左右键逐日查看，Home / End 跳到两端。</p>
+        <p class="muted small" id="chart-note"></p>
+        <details id="chart-table-details" class="chart-data"><summary>查看历史数据表</summary><div class="table-scroll"><table><thead><tr><th scope="col">日期</th><th scope="col">价格</th><th scope="col">成交量</th></tr></thead><tbody id="chart-table"></tbody></table></div></details>
+        <button id="export-history" class="ghost" type="button" disabled>导出当前区间 CSV</button>
+      </article>
+
+      <details class="card manual-card">
+        <summary>手动上架步骤</summary>
+        <ol>
+          <li>打开市场页面，确认物品和当前最低价。</li>
+          <li>在 Steam 上架页填入你接受的价格，并核对“买家支付 / 您将收到”。</li>
+          <li>用手机 Steam App 确认挂单。</li>
+        </ol>
+        <p class="muted small">本工具只做价格参考，不会替你操作 Steam。</p>
+      </details>
+    </section>
+
+    <section id="favorites-panel" class="history-panel" hidden><div class="section-head"><h3>收藏物品</h3><span class="muted small">点击重新查价</span></div><div id="favorites-list" class="history-list"></div></section>
+
+    <section class="history-panel">
+      <div class="section-head">
+        <h3>最近计算</h3>
+        <button id="clear-history" class="ghost" type="button">清空</button>
+      </div>
+      <div id="history-list" class="history-list">
+        <p class="muted small" id="history-empty">还没有计算记录</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>数据来自 Steam Community Market · 非官方只读工具</span>
+    <span class="dot-sep" aria-hidden="true"></span>
+    <span id="version"></span>
+    <span class="dot-sep" aria-hidden="true"></span>
+    <span>价格会变化，请刷新后再确认</span>
+  </footer>
+
+  <div id="toast" class="toast" hidden role="status"></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
