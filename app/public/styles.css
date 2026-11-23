@@ -490,7 +490,12 @@ input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 3px 
   display: flex; align-items: center; gap: 5px;
   font-size: 10.5px; color: var(--muted-2); line-height: 1.2;
 }
-.pin-badge { color: var(--gold); font-size: 10px; }
+.pin-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--gold);
+}
+.pin-badge svg { width: 10px; height: 10px; }
 .history-item strong {
   flex: none;
   color: var(--gold);
@@ -512,15 +517,15 @@ input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 3px 
 .side-item-row:focus-within .side-item-actions,
 .side-item-row.pinned .side-action-pin { opacity: 1; }
 .side-action {
-  width: 22px; height: 22px;
+  width: 24px; height: 24px;
   display: grid; place-items: center;
-  border: 0; border-radius: 4px;
+  border: 0; border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1;
   padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
 }
+.side-action svg { width: 13px; height: 13px; display: block; }
 .side-action:hover { background: var(--panel-hover); color: var(--text-strong); }
 .side-action-pin[aria-pressed="true"] { color: var(--gold); }
 .side-action-del:hover { color: var(--danger); background: var(--danger-bg); }
@@ -696,7 +701,7 @@ input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 3px 
 }
 
 .block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.block-head h3 { font-size: 12.5px; font-weight: 600; letter-spacing: 0.05em; color: var(--text-strong); text-transform: uppercase; }
+.block-head h3 { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.05em; color: var(--text-strong); text-transform: uppercase; }
 
 /* ---------- Decision Panel ---------- */
 .decision-panel { container-type: inline-size; display: flex; flex-direction: column; }

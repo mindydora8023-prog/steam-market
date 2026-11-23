@@ -752,6 +752,44 @@ function syncCustomCalcFromQuote(quote) {
   renderCustomFeedback(state.customQuote, false);
 }
 
+function makeIconSvg(kind, filled = false) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  if (kind === 'pin') {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M9.8 2.2 13.8 6.2 12.4 7.6 11.4 6.6 8.9 9.1 9.4 11.6 8 13 5.5 10.5 2.5 13.5 2 13 5 10 2.5 7.5 3.9 6.1 6.4 6.6 8.9 4.1 7.9 3.1Z');
+    path.setAttribute('fill', filled ? 'currentColor' : 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1.3');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+  } else if (kind === 'close') {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1.6');
+    path.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
+function applyBreakdownPreview(rec, isCustom = false) {
+  const quote = state.quote;
+  if (!quote || !rec) return;
+  const fees = rec.fees !== undefined ? rec.fees : rec.totalFees;
+  $('bd-buyer').textContent = rec.buyerPaysText || formatQuoteMoney(rec.buyerPays, quote);
+  $('bd-steam').textContent = rec.steamFeeText || formatQuoteMoney(rec.steamFee, quote);
+  $('bd-publisher').textContent = rec.publisherFeeText || formatQuoteMoney(rec.publisherFee, quote);
+  $('bd-receive').textContent = rec.receiveText || formatQuoteMoney(rec.receive, quote);
+  if ($('bd-custom-badge')) $('bd-custom-badge').hidden = !isCustom;
+  renderFeeBar({ buyerPays: rec.buyerPays, receive: rec.receive, steamFee: rec.steamFee, publisherFee: rec.publisherFee });
+  renderQuantity({ buyerPays: rec.buyerPays, receive: rec.receive, fees });
+}
+
 function renderCustomFeedback(res, isCustom) {
   const quote = state.quote;
   const badge = $('custom-badge');
@@ -767,8 +805,10 @@ function renderCustomFeedback(res, isCustom) {
       minReceive: formatQuoteMoney(res?.minReceive || marketMinimumFor(quote.currency), quote),
     });
     diffEl.textContent = '';
+    applyBreakdownPreview(quote.recommendation, false);
     return;
   }
+  applyBreakdownPreview(isCustom ? res : quote.recommendation, isCustom);
   const share = res.buyerPays > 0 ? ((res.totalFees / res.buyerPays) * 100).toFixed(1) : '0.0';
   let line = t('customSummary', {
     steam: formatQuoteMoney(res.steamFee, quote),
@@ -940,7 +980,7 @@ function renderHistory() {
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'side-action side-action-del';
-    del.textContent = 'x';
+    del.appendChild(makeIconSvg('close'));
     del.title = t('removeItem');
     del.setAttribute('aria-label', t('removeItem') + ' ' + (entry.name || entry.hashName));
     del.addEventListener('click', (event) => { event.stopPropagation(); removeHistoryEntry(entry); });
@@ -1049,12 +1089,15 @@ function renderStrategyOptions(quote) {
   }
 }
 
-function renderQuantity() {
+function renderQuantity(overrideRec = null) {
   for (const btn of document.querySelectorAll('.qty-btn')) {
     btn.classList.toggle('active', Number(btn.dataset.qty) === state.quantity);
   }
   if (!state.quote) return;
-  const rec = state.quote.recommendation;
+  const activeCustom = state.customQuote && state.customQuote.ok && state.customQuote.buyerPays !== state.quote.recommendation.buyerPays
+    ? { buyerPays: state.customQuote.buyerPays, receive: state.customQuote.receive, fees: state.customQuote.totalFees }
+    : null;
+  const rec = overrideRec || activeCustom || state.quote.recommendation;
   const currency = state.quote.currencyCode || 'CNY';
   const money = (minor) => new Intl.NumberFormat('zh-CN', { style: 'currency', currency }).format(minor * state.quantity / 10 ** decimalPlaces(state.quote.currency));
   $('quantity-total').textContent = t('quantityTotal', { quantity: state.quantity, buyer: money(rec.buyerPays), receive: money(rec.receive), fees: money(rec.fees) });
@@ -1194,7 +1237,7 @@ function renderFavorites() {
     if (entry.pinned) {
       const pinTag = document.createElement('span');
       pinTag.className = 'pin-badge';
-      pinTag.textContent = '[PIN]';
+      pinTag.appendChild(makeIconSvg('pin', true));
       sub.appendChild(pinTag);
     }
     const appSpan = document.createElement('span');
@@ -1211,7 +1254,7 @@ function renderFavorites() {
     const pinBtn = document.createElement('button');
     pinBtn.type = 'button';
     pinBtn.className = 'side-action side-action-pin';
-    pinBtn.textContent = '^';
+    pinBtn.appendChild(makeIconSvg('pin', Boolean(entry.pinned)));
     pinBtn.setAttribute('aria-pressed', String(Boolean(entry.pinned)));
     pinBtn.title = t(entry.pinned ? 'unpinItem' : 'pinItem');
     pinBtn.setAttribute('aria-label', t(entry.pinned ? 'unpinItem' : 'pinItem') + ' ' + (entry.name || entry.hashName));
@@ -1220,7 +1263,7 @@ function renderFavorites() {
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.className = 'side-action side-action-del';
-    delBtn.textContent = 'x';
+    delBtn.appendChild(makeIconSvg('close'));
     delBtn.title = t('removeItem');
     delBtn.setAttribute('aria-label', t('removeItem') + ' ' + (entry.name || entry.hashName));
     delBtn.addEventListener('click', (event) => { event.stopPropagation(); removeFavoriteEntry(entry); });
@@ -1655,11 +1698,16 @@ function drawPriceChart(points, current, days) {
     ),
   );
 
-  const labels = [
-    { time: minTime, anchor: 'start', x: margin.left },
-    { time: Math.round((minTime + maxTime) / 2), anchor: 'middle', x: margin.left + innerWidth / 2 },
-    { time: maxTime, anchor: 'end', x: width - margin.right },
-  ];
+  const tickCount = width >= 680 ? 5 : width >= 420 ? 4 : 3;
+  const labels = [];
+  for (let i = 0; i < tickCount; i++) {
+    const ratio = i / (tickCount - 1);
+    labels.push({
+      time: Math.round(minTime + timeSpan * ratio),
+      anchor: i === 0 ? 'start' : i === tickCount - 1 ? 'end' : 'middle',
+      x: margin.left + innerWidth * ratio,
+    });
+  }
   for (const label of labels) {
     svg.appendChild(
       make(
@@ -2037,12 +2085,61 @@ async function checkHealth() {
   }
 }
 
+function renderQuickExamples() {
+  const container = $('quick-examples');
+  if (!container) return;
+  const defaults = [
+    { appId: 730, name: 'Clutch Case', label: 'Clutch Case' },
+    { appId: 730, name: 'AK-47 | Redline (Field-Tested)', label: 'AK-47 | Redline (FT)' },
+    { appId: 440, name: 'Mann Co. Supply Crate Key', label: 'Mann Co. Key' },
+    { appId: 730, name: 'Kilowatt Case', label: 'Kilowatt Case' },
+  ];
+  const combined = [];
+  const seen = new Set();
+  const push = (entry) => {
+    const key = entry.appId + ':' + entry.name;
+    if (seen.has(key)) return;
+    seen.add(key);
+    combined.push(entry);
+  };
+  for (const fav of readFavorites().slice(0, 2)) push({ appId: Number(fav.appId), name: fav.hashName, label: fav.name || fav.hashName });
+  for (const h of loadHistory().slice(0, 2)) push({ appId: Number(h.appId), name: h.hashName, label: h.name || h.hashName });
+  for (const def of defaults) push(def);
+
+  const labelEl = container.querySelector('.quick-label');
+  container.replaceChildren();
+  if (labelEl) container.appendChild(labelEl);
+  for (const item of combined.slice(0, 4)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'quick-chip';
+    btn.dataset.app = String(item.appId);
+    btn.dataset.name = item.name;
+    btn.append(document.createTextNode(item.label + ' '));
+    const tag = document.createElement('span');
+    tag.className = 'chip-tag';
+    tag.textContent = appShortName(item.appId);
+    btn.appendChild(tag);
+    btn.addEventListener('click', () => {
+      ensureAppOption(item.appId);
+      state.appId = item.appId;
+      $('app-select').value = String(item.appId);
+      $('item-name').value = item.name;
+      $('clear-input').hidden = false;
+      saveSettings();
+      calculate();
+    });
+    container.appendChild(btn);
+  }
+}
+
 async function init() {
   await loadLocale();
   loadSettings();
   bind();
   renderHistory();
   renderFavorites();
+  renderQuickExamples();
   checkHealth();
 
   const params = new URLSearchParams(window.location.search);

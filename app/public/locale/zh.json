@@ -153,5 +153,6 @@
   "itemRemoved": "已移除记录",
   "feeBarReceive": "预计到手",
   "feeBarSteam": "Steam 费",
-  "feeBarPublisher": "发行商费"
+  "feeBarPublisher": "发行商费",
+  "customPreviewBadge": "试算预览"
 }

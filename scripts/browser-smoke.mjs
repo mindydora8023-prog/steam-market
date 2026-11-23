@@ -23,7 +23,7 @@ const steam = {
   },
 };
 const mount = '/steam/';
-const app = createApp({ steam, version: '0.5.0-test', publicDir: path.join(root, 'app/public') });
+const app = createApp({ steam, version: '0.5.1-test', publicDir: path.join(root, 'app/public') });
 const server = http.createServer((req, res) => {
   if (!req.url.startsWith(mount)) {
     res.writeHead(404).end();
@@ -63,7 +63,7 @@ try {
   await page.goto(base);
   assert.equal((await stylesheet).status(), 200);
   assert.ok(await page.locator('.brand-mark svg').evaluate((svg) => svg.getBoundingClientRect().width < 64));
-  await page.waitForFunction(() => document.querySelector('#version').textContent.includes('0.5.0'));
+  await page.waitForFunction(() => document.querySelector('#version').textContent.includes('0.5.1'));
   pass('stylesheet and health load through the reverse proxy prefix');
   await capture({ path: path.join(out, 'desktop-empty.png') });
   await page.click('#calculate');
@@ -108,10 +108,13 @@ try {
   await page.fill('#custom-receive', '5.00');
   assert.match(await page.inputValue('#custom-buyer'), /^\d+\.\d{2}$/);
   assert.notEqual(await page.inputValue('#custom-buyer'), '5.00');
+  assert.equal(await page.isVisible('#bd-custom-badge'), true);
+  assert.match(await page.textContent('#bd-receive'), /5\.00/);
   await page.click('#copy-custom-buyer');
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.inputValue('#custom-buyer'));
   await page.click('#reset-custom');
-  pass('custom price calculator supports reverse receive calculation and copy');
+  assert.equal(await page.isVisible('#bd-custom-badge'), false);
+  pass('custom price calculator supports reverse receive calculation, live breakdown sync, and copy');
   await page.click('#favorites-list .side-action-pin');
   assert.equal(await page.getAttribute('#favorites-list .side-action-pin', 'aria-pressed'), 'true');
   pass('favorites can be pinned in sidebar');
