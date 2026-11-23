@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMarketInput, priceNumber, cleanEntries, nearestPoint, queryParams, fetchJson } from '../app/public/ui-utils.js';
+import {
+  parseMarketInput,
+  priceNumber,
+  cleanEntries,
+  nearestPoint,
+  queryParams,
+  fetchJson,
+  quoteByBuyerPays,
+  quoteByReceive,
+  parseMajorToMinor,
+  movingAverage,
+} from '../app/public/ui-utils.js';
+import { feeBreakdown, marketMinimumFor, normalizeWallet, receiveForBuyerPays } from '../lib/fees.js';
 
 test('market links preserve canonical item names and app ids', () => {
   assert.deepEqual(parseMarketInput(' https://steamcommunity.com/market/listings/730/AK-47%20%7C%20Redline%20(Field-Tested)?x=1 '), { appId: 730, name: 'AK-47 | Redline (Field-Tested)' });
@@ -64,4 +76,49 @@ test('JSON requests abort hung fetches at their deadline', async () => {
     const controller = new AbortController(); controller.abort();
     await assert.rejects(fetchJson('/api/quote', { signal: controller.signal }), (error) => error.name === 'AbortError');
   } finally { globalThis.fetch = original; }
+});
+
+test('custom buyer/receive fee calculator matches backend lib/fees across currencies', () => {
+  for (const currency of [23, 1, 8]) {
+    const wallet = normalizeWallet({ wallet_currency: currency, wallet_market_minimum: marketMinimumFor(currency) });
+    for (const target of [21, 50, 100, 365, 1299, 5000]) {
+      const expectedReceive = receiveForBuyerPays(target, wallet);
+      const res = quoteByBuyerPays(target, { currency, steamFee: 5, publisherFee: 10 });
+      if (expectedReceive === null) {
+        assert.equal(res.ok, false);
+      } else {
+        const expected = feeBreakdown(expectedReceive, wallet);
+        assert.equal(res.ok, true);
+        assert.equal(res.receive, expected.receive);
+        assert.equal(res.buyerPays, expected.buyerPays);
+        assert.equal(res.steamFee, expected.steamFee);
+        assert.equal(res.publisherFee, expected.publisherFee);
+      }
+    }
+    const rev = quoteByReceive(315, { currency, steamFee: 5, publisherFee: 10 });
+    const expectedRev = feeBreakdown(315, wallet);
+    assert.equal(rev.ok, true);
+    assert.equal(rev.buyerPays, expectedRev.buyerPays);
+    assert.equal(rev.totalFees, expectedRev.totalFees);
+  }
+  assert.equal(quoteByBuyerPays(10, { currency: 23 }).ok, false);
+  assert.equal(quoteByReceive(3, { currency: 23 }).ok, false);
+});
+
+test('parseMajorToMinor parses currency input safely', () => {
+  assert.equal(parseMajorToMinor('3.65', 23), 365);
+  assert.equal(parseMajorToMinor('1,234.5', 1), 123450);
+  assert.equal(parseMajorToMinor('500', 8), 500);
+  assert.equal(parseMajorToMinor('', 23), null);
+  assert.equal(parseMajorToMinor('-5', 23), null);
+  assert.equal(parseMajorToMinor('abc', 23), null);
+});
+
+test('movingAverage computes 7-day rolling mean', () => {
+  const pts = Array.from({ length: 10 }, (_, i) => ({ time: i * 86400, value: (i + 1) * 100 }));
+  const ma = movingAverage(pts, 7);
+  assert.equal(ma.length, 4);
+  assert.equal(ma[0].value, 400);
+  assert.equal(ma[3].value, 700);
+  assert.deepEqual(movingAverage(pts.slice(0, 3), 7), []);
 });

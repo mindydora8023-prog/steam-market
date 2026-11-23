@@ -1,4 +1,17 @@
-import { parseMarketInput, priceNumber, cleanEntries, nearestPoint, fetchJson, queryParams, decimalPlaces } from './ui-utils.js';
+import {
+  parseMarketInput,
+  priceNumber,
+  cleanEntries,
+  nearestPoint,
+  fetchJson,
+  queryParams,
+  decimalPlaces,
+  quoteByBuyerPays,
+  quoteByReceive,
+  parseMajorToMinor,
+  movingAverage,
+  marketMinimumFor,
+} from './ui-utils.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -71,6 +84,10 @@ const state = {
   historyKey: null,
   cooldownUntil: 0,
   lastCleared: null,
+  showMa: true,
+  showVolume: true,
+  favFilter: 'all',
+  customQuote: null,
 };
 
 function t(key, vars = {}) {
@@ -101,7 +118,7 @@ function firstChar(value) {
 
 async function loadLocale() {
   try {
-    state.locale = await fetchJson('/locale/zh.json', { timeoutMs: 8000 });
+    state.locale = await fetchJson('./locale/zh.json', { timeoutMs: 8000 });
   } catch {
     state.locale = {};
   }
@@ -147,7 +164,11 @@ function loadSettings() {
   $('publisher-fee').value = String(state.publisherFee);
   state.quantity = clamp(Math.trunc(num(settings.quantity, 1)), 1, 10000);
   state.historyDays = [30, 90, 180, 365].includes(Number(settings.historyDays)) ? Number(settings.historyDays) : 180;
+  state.showMa = settings.showMa !== false;
+  state.showVolume = settings.showVolume !== false;
   $('quantity').value = state.quantity;
+  if ($('toggle-ma')) $('toggle-ma').setAttribute('aria-pressed', String(state.showMa));
+  if ($('toggle-vol')) $('toggle-vol').setAttribute('aria-pressed', String(state.showVolume));
   updateFeeSummary();
 }
 
@@ -164,6 +185,8 @@ function saveSettings() {
         publisherFee: state.publisherFee,
         quantity: state.quantity,
         historyDays: state.historyDays,
+        showMa: state.showMa,
+        showVolume: state.showVolume,
       }),
     );
   } catch {
@@ -193,8 +216,8 @@ function setBusy(busy) {
   $('query-status').hidden = !busy;
   $('refresh-quote').disabled = busy || state.cooldownUntil > Date.now();
   $('query-status-text').textContent = t('loadingQuote');
-  for (const id of ['copy-price', 'copy-receive', 'share-quote', 'favorite-quote']) {
-    $(id).setAttribute('aria-disabled', String(!quoteIsCurrent()));
+  for (const id of ['copy-price', 'copy-receive', 'share-quote', 'favorite-quote', 'copy-custom-buyer', 'copy-custom-receive']) {
+    if ($(id)) $(id).setAttribute('aria-disabled', String(!quoteIsCurrent()));
   }
 }
 
@@ -346,7 +369,7 @@ async function runSearch(query) {
       q: query,
       limit: '8',
     });
-    const data = await fetchJson(`/api/search?${params.toString()}`, { signal: controller.signal });
+    const data = await fetchJson(`./api/search?${params.toString()}`, { signal: controller.signal });
     if (controller.signal.aborted || state.searchAbort !== controller || state.appId !== appId) return;
     if ($('item-name').value.trim() !== query) return;
     if (data && data.ok) {
@@ -380,6 +403,7 @@ function showError(message, suggestions = []) {
     state.historyAbort = null;
   }
   state.historyLoading = false;
+  $('empty-state').hidden = true;
   $('result').hidden = !state.quote;
   if (state.quote) { $('result-stale').hidden = false; $('result-stale').textContent = t('staleFailed'); $('result').classList.add('stale'); }
   const box = $('error-box');
@@ -486,6 +510,7 @@ function renderQuote(quote, options = {}) {
   const market = quote.market || {};
 
   $('result').hidden = false;
+  $('empty-state').hidden = true;
   hideError();
 
   $('item-name-result').textContent = quote.item.name || quote.item.hashName;
@@ -515,6 +540,8 @@ function renderQuote(quote, options = {}) {
   $('bd-steam').textContent = rec.steamFeeText || '-';
   $('bd-publisher').textContent = rec.publisherFeeText || '-';
   $('bd-receive').textContent = rec.receiveText || '-';
+  renderFeeBar(rec);
+  syncCustomCalcFromQuote(quote);
 
   const warningBox = $('warnings');
   warningBox.replaceChildren();
@@ -600,7 +627,7 @@ async function calculate({ refresh = false } = {}) {
       publisherFee: String(state.publisherFee),
       refresh: refresh ? '1' : '0',
     });
-    const data = await fetchJson(`/api/quote?${params.toString()}`, { signal: controller.signal, timeoutMs: 65000 });
+    const data = await fetchJson(`./api/quote?${params.toString()}`, { signal: controller.signal, timeoutMs: 65000 });
     if (controller.signal.aborted || state.quoteAbort !== controller || contextKey() !== requestContext) return;
 
     if (data && data.ok) {
@@ -642,12 +669,192 @@ function saveHistory(entries) {
   }
 }
 
+const APP_SHORT_NAMES = {
+  730: 'CS2',
+  570: 'Dota 2',
+  440: 'TF2',
+  252490: 'Rust',
+  753: 'Steam',
+};
+
+function appShortName(appId, fallback = '') {
+  return APP_SHORT_NAMES[Number(appId)] || fallback || ('App ' + appId);
+}
+
+function currencySymbol(code) {
+  try {
+    const part = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: code || 'CNY' })
+      .formatToParts(0)
+      .find((p) => p.type === 'currency');
+    return part ? part.value : (code || '');
+  } catch {
+    return code || '';
+  }
+}
+
+function formatQuoteMoney(minor, quote = state.quote) {
+  if (!quote || !Number.isFinite(Number(minor))) return '-';
+  const decimals = decimalPlaces(quote.currency);
+  const code = quote.currencyCode || 'CNY';
+  const value = Number(minor) / (10 ** decimals);
+  try {
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(value);
+  } catch {
+    return value.toFixed(decimals);
+  }
+}
+
+function renderFeeBar(rec) {
+  const total = Number(rec?.buyerPays) || 0;
+  if (total <= 0) return;
+  const rPct = clamp((Number(rec.receive) / total) * 100, 0, 100);
+  const sPct = clamp((Number(rec.steamFee) / total) * 100, 0, 100);
+  const pPct = clamp(100 - rPct - sPct, 0, 100);
+  if ($('fee-seg-receive')) $('fee-seg-receive').style.width = rPct.toFixed(2) + '%';
+  if ($('fee-seg-steam')) $('fee-seg-steam').style.width = sPct.toFixed(2) + '%';
+  if ($('fee-seg-pub')) $('fee-seg-pub').style.width = pPct.toFixed(2) + '%';
+  if ($('fee-pct-receive')) $('fee-pct-receive').textContent = rPct.toFixed(1) + '%';
+  if ($('fee-pct-steam')) $('fee-pct-steam').textContent = sPct.toFixed(1) + '%';
+  if ($('fee-pct-pub')) $('fee-pct-pub').textContent = pPct.toFixed(1) + '%';
+}
+
+function syncCustomCalcFromQuote(quote) {
+  if (!quote || !$('custom-buyer')) return;
+  const rec = quote.recommendation;
+  const sym = currencySymbol(quote.currencyCode);
+  $('custom-buyer-prefix').textContent = sym;
+  $('custom-receive-prefix').textContent = sym;
+  const minFloor = marketMinimumFor(quote.currency);
+  const anchor = quote.market.lowest || quote.market.median || rec.buyerPays || 100;
+  const minBuyer = Math.max(minFloor * 3, Math.floor(anchor * 0.6));
+  const maxBuyer = Math.max(minBuyer + 20, Math.ceil(anchor * 1.4));
+  const slider = $('custom-slider');
+  slider.min = String(minBuyer);
+  slider.max = String(maxBuyer);
+  slider.step = '1';
+  slider.value = String(clamp(rec.buyerPays || anchor, minBuyer, maxBuyer));
+  $('custom-buyer').value = priceNumber(rec.buyerPays, quote.currency);
+  $('custom-receive').value = priceNumber(rec.receive, quote.currency);
+  state.customQuote = {
+    ok: true,
+    exact: true,
+    buyerPays: rec.buyerPays,
+    receive: rec.receive,
+    steamFee: rec.steamFee,
+    publisherFee: rec.publisherFee,
+    totalFees: rec.fees,
+  };
+  renderCustomFeedback(state.customQuote, false);
+}
+
+function renderCustomFeedback(res, isCustom) {
+  const quote = state.quote;
+  const badge = $('custom-badge');
+  const diffEl = $('custom-diff');
+  const fb = $('custom-feedback');
+  if (!quote || !fb) return;
+  badge.hidden = !isCustom;
+  fb.classList.remove('warn', 'err');
+  if (!res || !res.ok) {
+    fb.classList.add('err');
+    fb.textContent = t('customBelowMin', {
+      minBuyer: formatQuoteMoney(res?.minBuyerPays || marketMinimumFor(quote.currency) * 3, quote),
+      minReceive: formatQuoteMoney(res?.minReceive || marketMinimumFor(quote.currency), quote),
+    });
+    diffEl.textContent = '';
+    return;
+  }
+  const share = res.buyerPays > 0 ? ((res.totalFees / res.buyerPays) * 100).toFixed(1) : '0.0';
+  let line = t('customSummary', {
+    steam: formatQuoteMoney(res.steamFee, quote),
+    publisher: formatQuoteMoney(res.publisherFee, quote),
+    share,
+  });
+  if (res.exact === false) {
+    fb.classList.add('warn');
+    line = t('customFeeStepNote', { actual: formatQuoteMoney(res.buyerPays, quote) }) + ' / ' + line;
+  }
+  fb.textContent = line;
+
+  const lowest = quote.market.lowest;
+  if (lowest && Number.isInteger(lowest)) {
+    const delta = res.buyerPays - lowest;
+    if (delta === 0) diffEl.textContent = t('customDiffMatch');
+    else if (delta < 0) diffEl.textContent = t('customDiffBelow', { amount: formatQuoteMoney(Math.abs(delta), quote) });
+    else diffEl.textContent = t('customDiffAbove', { amount: formatQuoteMoney(delta, quote) });
+  } else {
+    diffEl.textContent = '';
+  }
+}
+
+function updateCustomFromBuyer(source = 'input') {
+  if (!state.quote) return;
+  const minor = source === 'slider'
+    ? Math.trunc(Number($('custom-slider').value) || 0)
+    : parseMajorToMinor($('custom-buyer').value, state.quote.currency);
+  if (minor === null) {
+    state.customQuote = null;
+    renderCustomFeedback({ ok: false }, true);
+    return;
+  }
+  const res = quoteByBuyerPays(minor, {
+    currency: state.quote.currency,
+    steamFee: state.steamFee,
+    publisherFee: state.publisherFee,
+  });
+  state.customQuote = res;
+  if (res.ok) {
+    if (source === 'slider') $('custom-buyer').value = priceNumber(res.buyerPays, state.quote.currency);
+    $('custom-receive').value = priceNumber(res.receive, state.quote.currency);
+    const slider = $('custom-slider');
+    if (source !== 'slider') slider.value = String(clamp(res.buyerPays, Number(slider.min), Number(slider.max)));
+  }
+  const isCustom = !res.ok || res.buyerPays !== state.quote.recommendation.buyerPays;
+  renderCustomFeedback(res, isCustom);
+}
+
+function updateCustomFromReceive() {
+  if (!state.quote) return;
+  const minor = parseMajorToMinor($('custom-receive').value, state.quote.currency);
+  if (minor === null) {
+    state.customQuote = null;
+    renderCustomFeedback({ ok: false }, true);
+    return;
+  }
+  const res = quoteByReceive(minor, {
+    currency: state.quote.currency,
+    steamFee: state.steamFee,
+    publisherFee: state.publisherFee,
+  });
+  state.customQuote = res;
+  if (res.ok) {
+    $('custom-buyer').value = priceNumber(res.buyerPays, state.quote.currency);
+    const slider = $('custom-slider');
+    slider.value = String(clamp(res.buyerPays, Number(slider.min), Number(slider.max)));
+  }
+  const isCustom = !res.ok || res.buyerPays !== state.quote.recommendation.buyerPays;
+  renderCustomFeedback(res, isCustom);
+}
+
+function copyCustomPrice(kind = 'buyerPays') {
+  if (!state.quote || !quoteIsCurrent()) { toast(t('staleCopy')); return; }
+  if (!state.customQuote || !state.customQuote.ok) { toast(t('errorNoValid')); return; }
+  copyText(priceNumber(state.customQuote[kind], state.quote.currency));
+}
+
 function remember(quote) {
   const entries = loadHistory();
   const entry = {
     appId: quote.item.appId,
     hashName: quote.item.hashName,
     name: quote.item.name,
+    appName: quote.item.appName || '',
+    iconUrl: quote.item.iconUrl || '',
     priceText: quote.recommendation.buyerPaysText,
     currency: quote.currency,
     at: Date.now(),
@@ -664,10 +871,37 @@ function remember(quote) {
   renderHistory();
 }
 
+function makeSideThumb(entry) {
+  const thumb = document.createElement('span');
+  thumb.className = 'side-thumb';
+  if (entry.iconUrl) {
+    const img = document.createElement('img');
+    img.src = entry.iconUrl;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
+    img.addEventListener('error', () => { img.remove(); thumb.textContent = firstChar(entry.name || entry.hashName); });
+    thumb.appendChild(img);
+  } else {
+    thumb.textContent = firstChar(entry.name || entry.hashName);
+  }
+  return thumb;
+}
+
+function removeHistoryEntry(entry) {
+  const entries = loadHistory().filter(
+    (item) => !(item.appId === entry.appId && item.hashName === entry.hashName && item.currency === entry.currency),
+  );
+  saveHistory(entries);
+  renderHistory();
+  toast(t('itemRemoved'));
+}
+
 function renderHistory() {
   const list = $('history-list');
   const entries = loadHistory();
   $('clear-history').disabled = entries.length === 0 && !state.lastCleared;
+  $('history-count').textContent = entries.length ? String(entries.length) : '';
   list.replaceChildren();
   if (entries.length === 0) {
     const empty = document.createElement('p');
@@ -678,18 +912,42 @@ function renderHistory() {
   }
 
   for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'side-item-row';
+
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'history-item';
-    button.title = new Date(entry.at).toLocaleString('zh-CN', { hour12: false });
+    button.title = (entry.name || entry.hashName) + ' - ' + new Date(entry.at).toLocaleString('zh-CN', { hour12: false });
+
+    const info = document.createElement('span');
+    info.className = 'side-item-info';
     const name = document.createElement('span');
+    name.className = 'side-item-name';
     name.textContent = entry.name || entry.hashName;
+    const sub = document.createElement('span');
+    sub.className = 'side-item-sub';
+    sub.textContent = appShortName(entry.appId, entry.appName);
+    info.append(name, sub);
+
     const price = document.createElement('strong');
     price.textContent = entry.priceText || '';
-    button.appendChild(name);
-    button.appendChild(price);
+    button.append(makeSideThumb(entry), info, price);
     button.addEventListener('click', () => restoreEntry(entry));
-    list.appendChild(button);
+
+    const actions = document.createElement('span');
+    actions.className = 'side-item-actions';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'side-action side-action-del';
+    del.textContent = 'x';
+    del.title = t('removeItem');
+    del.setAttribute('aria-label', t('removeItem') + ' ' + (entry.name || entry.hashName));
+    del.addEventListener('click', (event) => { event.stopPropagation(); removeHistoryEntry(entry); });
+    actions.appendChild(del);
+
+    row.append(button, actions);
+    list.appendChild(row);
   }
 }
 
@@ -792,6 +1050,9 @@ function renderStrategyOptions(quote) {
 }
 
 function renderQuantity() {
+  for (const btn of document.querySelectorAll('.qty-btn')) {
+    btn.classList.toggle('active', Number(btn.dataset.qty) === state.quantity);
+  }
   if (!state.quote) return;
   const rec = state.quote.recommendation;
   const currency = state.quote.currencyCode || 'CNY';
@@ -824,30 +1085,149 @@ function restoreEntry(entry) {
   updateStrategyControls(); updateFeeSummary(); saveSettings(); calculate();
 }
 
+function writeFavorites(entries) {
+  try {
+    localStorage.setItem(STORAGE.favorites, JSON.stringify(entries.slice(0, 30)));
+    return true;
+  } catch {
+    toast(t('storageFailed'));
+    return false;
+  }
+}
+
 function toggleFavorite() {
   if (!quoteIsCurrent()) { toast(t('staleCopy')); return; }
   const item = state.quote.item;
   const favorites = readFavorites();
   const exists = favorites.some((entry) => sameItem(entry, item));
   if (!exists && favorites.length >= 30) { toast(t('favoriteLimit')); return; }
-  const next = exists ? favorites.filter((entry) => !sameItem(entry, item)) : [{ appId: item.appId, hashName: item.hashName, name: item.name, currency: state.quote.currency }, ...favorites].slice(0, 30);
-  try { localStorage.setItem(STORAGE.favorites, JSON.stringify(next)); }
-  catch { toast(t('storageFailed')); return; }
+  const next = exists
+    ? favorites.filter((entry) => !sameItem(entry, item))
+    : [{
+      appId: item.appId,
+      hashName: item.hashName,
+      name: item.name,
+      appName: item.appName || '',
+      iconUrl: item.iconUrl || '',
+      currency: state.quote.currency,
+      pinned: false,
+    }, ...favorites].slice(0, 30);
+  if (!writeFavorites(next)) return;
   renderFavorites();
   toast(t(exists ? 'favoriteRemoved' : 'favoriteAdded'));
 }
 
+function togglePinFavorite(target) {
+  const favorites = readFavorites();
+  let pinned = false;
+  const next = favorites.map((entry) => {
+    if (!sameItem(entry, target)) return entry;
+    pinned = !entry.pinned;
+    return { ...entry, pinned };
+  });
+  if (!writeFavorites(next)) return;
+  renderFavorites();
+  toast(t(pinned ? 'favPinned' : 'favUnpinned'));
+}
+
+function removeFavoriteEntry(target) {
+  const next = readFavorites().filter((entry) => !sameItem(entry, target));
+  if (!writeFavorites(next)) return;
+  renderFavorites();
+  toast(t('favoriteRemoved'));
+}
+
 function renderFavorites() {
-  const entries = readFavorites();
+  const raw = readFavorites();
+  const entries = raw.slice().sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
   const box = $('favorites-list');
+  const filterBox = $('favorites-filter');
   box.replaceChildren();
   $('favorites-panel').hidden = !entries.length;
-  for (const entry of entries) {
+  $('favorites-count').textContent = entries.length ? String(entries.length) : '';
+
+  const appIds = [...new Set(entries.map((entry) => Number(entry.appId)))];
+  if (state.favFilter !== 'all' && !appIds.includes(Number(state.favFilter))) {
+    state.favFilter = 'all';
+  }
+  if (filterBox) {
+    filterBox.replaceChildren();
+    filterBox.hidden = appIds.length < 2;
+    if (appIds.length >= 2) {
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.className = 'filter-chip' + (state.favFilter === 'all' ? ' active' : '');
+      allBtn.textContent = t('filterAllGames');
+      allBtn.addEventListener('click', () => { state.favFilter = 'all'; renderFavorites(); });
+      filterBox.appendChild(allBtn);
+      for (const appId of appIds) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'filter-chip' + (String(state.favFilter) === String(appId) ? ' active' : '');
+        chip.textContent = appShortName(appId);
+        chip.addEventListener('click', () => { state.favFilter = String(appId); renderFavorites(); });
+        filterBox.appendChild(chip);
+      }
+    }
+  }
+
+  const visible = state.favFilter === 'all'
+    ? entries
+    : entries.filter((entry) => String(entry.appId) === String(state.favFilter));
+
+  for (const entry of visible) {
+    const row = document.createElement('div');
+    row.className = 'side-item-row' + (entry.pinned ? ' pinned' : '');
+
     const button = document.createElement('button');
-    button.type = 'button'; button.className = 'history-item';
-    button.textContent = entry.name || entry.hashName;
+    button.type = 'button';
+    button.className = 'history-item';
+    button.title = entry.name || entry.hashName;
+
+    const info = document.createElement('span');
+    info.className = 'side-item-info';
+    const name = document.createElement('span');
+    name.className = 'side-item-name';
+    name.textContent = entry.name || entry.hashName;
+    const sub = document.createElement('span');
+    sub.className = 'side-item-sub';
+    if (entry.pinned) {
+      const pinTag = document.createElement('span');
+      pinTag.className = 'pin-badge';
+      pinTag.textContent = '[PIN]';
+      sub.appendChild(pinTag);
+    }
+    const appSpan = document.createElement('span');
+    appSpan.textContent = appShortName(entry.appId, entry.appName);
+    sub.appendChild(appSpan);
+    info.append(name, sub);
+
+    button.append(makeSideThumb(entry), info);
     button.addEventListener('click', () => restoreEntry(entry));
-    box.appendChild(button);
+
+    const actions = document.createElement('span');
+    actions.className = 'side-item-actions';
+
+    const pinBtn = document.createElement('button');
+    pinBtn.type = 'button';
+    pinBtn.className = 'side-action side-action-pin';
+    pinBtn.textContent = '^';
+    pinBtn.setAttribute('aria-pressed', String(Boolean(entry.pinned)));
+    pinBtn.title = t(entry.pinned ? 'unpinItem' : 'pinItem');
+    pinBtn.setAttribute('aria-label', t(entry.pinned ? 'unpinItem' : 'pinItem') + ' ' + (entry.name || entry.hashName));
+    pinBtn.addEventListener('click', (event) => { event.stopPropagation(); togglePinFavorite(entry); });
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'side-action side-action-del';
+    delBtn.textContent = 'x';
+    delBtn.title = t('removeItem');
+    delBtn.setAttribute('aria-label', t('removeItem') + ' ' + (entry.name || entry.hashName));
+    delBtn.addEventListener('click', (event) => { event.stopPropagation(); removeFavoriteEntry(entry); });
+
+    actions.append(pinBtn, delBtn);
+    row.append(button, actions);
+    box.appendChild(row);
   }
   const active = state.quote && entries.some((entry) => sameItem(entry, state.quote.item));
   $('favorite-quote').setAttribute('aria-pressed', String(Boolean(active)));
@@ -993,7 +1373,7 @@ async function loadPriceHistory(quote, refresh = false) {
       current: String(current),
       refresh: refresh ? '1' : '0',
     });
-    const data = await fetchJson(`/api/history?${params.toString()}`, { signal: controller.signal, timeoutMs: 65000 });
+    const data = await fetchJson(`./api/history?${params.toString()}`, { signal: controller.signal, timeoutMs: 65000 });
     if (controller.signal.aborted || state.historyAbort !== controller) return;
     if (data && data.ok && Array.isArray(data.points) && data.points.length >= 2) {
       state.history = data;
@@ -1053,7 +1433,8 @@ function renderHistoryChart() {
     statsBox.appendChild(percentile);
 
     const change = document.createElement('span');
-    change.className = 'chart-stat';
+    const changeDir = stats.changePct === null ? '' : Number(stats.changePct) > 0 ? ' up' : Number(stats.changePct) < 0 ? ' down' : '';
+    change.className = 'chart-stat' + changeDir;
     change.textContent = stats.changePct === null ? t('chartChangeMissing') : t('chartChange', { days, change: formatPct(stats.changePct) });
     statsBox.appendChild(change);
 
@@ -1090,12 +1471,20 @@ function drawPriceChart(points, current, days) {
   empty.hidden = true;
   svg.setAttribute('aria-label', t('chartAria', { days }));
 
-  const width = Math.max(180, Math.min(1100, svg.getBoundingClientRect().width || 800));
-  const height = width < 500 ? 260 : 300;
+  const width = Math.max(180, Math.min(1600, svg.getBoundingClientRect().width || 800));
+  const showVol = Boolean(state.showVolume);
+  const showMa = Boolean(state.showMa) && points.length >= 7;
+  const height = width < 500 ? (showVol ? 300 : 260) : (showVol ? 348 : 300);
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  const margin = { left: width < 500 ? 62 : 76, right: 14, top: 18, bottom: 30 };
+  const margin = { left: width < 500 ? 62 : 76, right: 16, top: 20, bottom: 30 };
   const innerWidth = width - margin.left - margin.right;
-  const innerHeight = height - margin.top - margin.bottom;
+  const totalInnerHeight = height - margin.top - margin.bottom;
+  const volGap = showVol ? 14 : 0;
+  const volHeight = showVol ? Math.round(totalInnerHeight * 0.22) : 0;
+  const priceHeight = totalInnerHeight - volHeight - volGap;
+  const priceBottom = margin.top + priceHeight;
+  const volTop = priceBottom + volGap;
+  const volBottom = margin.top + totalInnerHeight;
 
   const make = (tag, attrs = {}, text = null) => {
     const node = document.createElementNS(NS, tag);
@@ -1110,7 +1499,7 @@ function drawPriceChart(points, current, days) {
     min -= 1;
     max += 1;
   }
-  const padding = (max - min) * 0.08;
+  const padding = (max - min) * 0.09;
   min = Math.max(0, min - padding);
   max += padding;
 
@@ -1119,17 +1508,18 @@ function drawPriceChart(points, current, days) {
   const timeSpan = Math.max(1, maxTime - minTime);
 
   const x = (time) => margin.left + ((time - minTime) / timeSpan) * innerWidth;
-  const y = (value) => margin.top + ((max - value) / (max - min)) * innerHeight;
+  const y = (value) => margin.top + ((max - value) / (max - min)) * priceHeight;
 
   const defs = make('defs');
   const gradient = make('linearGradient', { id: 'chart-area', x1: '0', y1: '0', x2: '0', y2: '1' });
-  gradient.appendChild(make('stop', { offset: '0%', 'stop-color': '#66c0f4', 'stop-opacity': '0.28' }));
-  gradient.appendChild(make('stop', { offset: '100%', 'stop-color': '#66c0f4', 'stop-opacity': '0.01' }));
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--blue').trim() || '#38bdf8';
+  gradient.appendChild(make('stop', { offset: '0%', 'stop-color': accent, 'stop-opacity': '0.26' }));
+  gradient.appendChild(make('stop', { offset: '100%', 'stop-color': accent, 'stop-opacity': '0.01' }));
   defs.appendChild(gradient);
   svg.appendChild(defs);
 
   for (let index = 0; index <= 4; index++) {
-    const lineY = margin.top + (innerHeight * index) / 4;
+    const lineY = margin.top + (priceHeight * index) / 4;
     svg.appendChild(
       make('line', {
         class: 'grid-line',
@@ -1154,12 +1544,55 @@ function drawPriceChart(points, current, days) {
     );
   }
 
+  const volBars = [];
+  if (showVol) {
+    svg.appendChild(
+      make('line', {
+        class: 'vol-divider',
+        x1: margin.left,
+        x2: width - margin.right,
+        y1: volTop - Math.round(volGap / 2),
+        y2: volTop - Math.round(volGap / 2),
+      }),
+    );
+    const maxVol = Math.max(1, ...points.map((point) => Number(point.volume || 0)));
+    const barW = Math.max(1.5, Math.min(8, (innerWidth / Math.max(points.length, 1)) * 0.68));
+    const volGroup = make('g', { class: 'vol-bars' });
+    for (let i = 0; i < points.length; i++) {
+      const vol = Number(points[i].volume || 0);
+      const barH = Math.max(1, (vol / maxVol) * volHeight);
+      const bar = make('rect', {
+        class: 'vol-bar',
+        x: (x(points[i].time) - barW / 2).toFixed(2),
+        y: (volBottom - barH).toFixed(2),
+        width: barW.toFixed(2),
+        height: barH.toFixed(2),
+        rx: 1,
+      });
+      volGroup.appendChild(bar);
+      volBars.push(bar);
+    }
+    svg.appendChild(volGroup);
+    svg.appendChild(
+      make(
+        'text',
+        {
+          class: 'axis-label',
+          x: margin.left - 8,
+          y: volTop + 10,
+          'text-anchor': 'end',
+        },
+        maxVol.toLocaleString('en-US'),
+      ),
+    );
+  }
+
   const linePath = points
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(point.time).toFixed(2)} ${y(point.value).toFixed(2)}`)
     .join(' ');
   const firstX = x(points[0].time).toFixed(2);
   const lastX = x(points[points.length - 1].time).toFixed(2);
-  const bottom = (margin.top + innerHeight).toFixed(2);
+  const bottom = priceBottom.toFixed(2);
   svg.appendChild(
     make('path', {
       class: 'price-area',
@@ -1167,6 +1600,37 @@ function drawPriceChart(points, current, days) {
     }),
   );
   svg.appendChild(make('path', { class: 'price-line', d: linePath }));
+
+  const maMap = new Map();
+  if (showMa) {
+    const maPoints = movingAverage(points, 7);
+    if (maPoints.length >= 2) {
+      for (const mp of maPoints) maMap.set(mp.time, mp.value);
+      const maPath = maPoints
+        .map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(point.time).toFixed(2)} ${y(point.value).toFixed(2)}`)
+        .join(' ');
+      svg.appendChild(make('path', { class: 'ma-line', d: maPath }));
+    }
+  }
+
+  let hiPt = points[0];
+  let loPt = points[0];
+  for (const pt of points) {
+    if (pt.value > hiPt.value) hiPt = pt;
+    if (pt.value < loPt.value) loPt = pt;
+  }
+  if (hiPt !== loPt) {
+    const hiX = x(hiPt.time);
+    const hiY = y(hiPt.value);
+    const loX = x(loPt.time);
+    const loY = y(loPt.value);
+    svg.appendChild(make('circle', { class: 'extreme-dot-high', cx: hiX.toFixed(2), cy: hiY.toFixed(2), r: '3' }));
+    svg.appendChild(make('circle', { class: 'extreme-dot-low', cx: loX.toFixed(2), cy: loY.toFixed(2), r: '3' }));
+    const hiAnchor = hiX > width - 90 ? 'end' : hiX < margin.left + 70 ? 'start' : 'middle';
+    const loAnchor = loX > width - 90 ? 'end' : loX < margin.left + 70 ? 'start' : 'middle';
+    svg.appendChild(make('text', { class: 'extreme-label', x: hiX.toFixed(2), y: Math.max(margin.top + 10, hiY - 7).toFixed(2), 'text-anchor': hiAnchor }, t('chartHighPoint', { price: formatMoney(hiPt.value) })));
+    svg.appendChild(make('text', { class: 'extreme-label', x: loX.toFixed(2), y: Math.min(priceBottom - 4, loY + 14).toFixed(2), 'text-anchor': loAnchor }, t('chartLowPoint', { price: formatMoney(loPt.value) })));
+  }
 
   const currentY = y(current);
   svg.appendChild(
@@ -1215,53 +1679,78 @@ function drawPriceChart(points, current, days) {
   const hoverLine = make('line', {
     class: 'hover-line',
     y1: margin.top,
-    y2: margin.top + innerHeight,
+    y2: volBottom,
   });
-  const hoverDot = make('circle', { class: 'hover-dot', r: '4' });
+  const hoverHLine = make('line', {
+    class: 'hover-hline',
+    x1: margin.left,
+    x2: width - margin.right,
+  });
+  const hoverDot = make('circle', { class: 'hover-dot', r: '4.5' });
+  const yPillBg = make('rect', { class: 'axis-pill-bg', width: margin.left - 6, height: 18, rx: 3, ry: 3, x: 2 });
+  const yPillText = make('text', { class: 'axis-pill-text', x: margin.left - 8, 'text-anchor': 'end' });
   const tooltipBg = make('rect', {
     class: 'tooltip-bg',
-    width: 176,
-    height: 54,
-    rx: 8,
-    ry: 8,
+    width: 196,
+    height: 76,
+    rx: 7,
+    ry: 7,
   });
-  const tooltipDate = make('text', { class: 'tooltip-text' });
-  const tooltipPrice = make('text', { class: 'tooltip-text' });
+  const tooltipDate = make('text', { class: 'tooltip-muted' });
+  const tooltipPrice = make('text', { class: 'tooltip-price' });
+  const tooltipMeta = make('text', { class: 'tooltip-text' });
   const tooltipVolume = make('text', { class: 'tooltip-muted' });
-  hover.appendChild(hoverLine);
-  hover.appendChild(hoverDot);
-  hover.appendChild(tooltipBg);
-  hover.appendChild(tooltipDate);
-  hover.appendChild(tooltipPrice);
-  hover.appendChild(tooltipVolume);
+  hover.append(hoverLine, hoverHLine, hoverDot, yPillBg, yPillText, tooltipBg, tooltipDate, tooltipPrice, tooltipMeta, tooltipVolume);
   svg.appendChild(hover);
 
   let activePoint = points.length - 1;
+  let lastBarIndex = -1;
+  const clearBarHighlight = () => {
+    if (lastBarIndex >= 0 && volBars[lastBarIndex]) volBars[lastBarIndex].classList.remove('active');
+    lastBarIndex = -1;
+  };
+
   const showPoint = (index) => {
     activePoint = clamp(index, 0, points.length - 1);
     const nearest = points[activePoint];
-    $('chart-selection').textContent = new Date(nearest.time * 1000).toLocaleDateString('zh-CN') + ' / ' + formatMoney(nearest.value) + ' / ' + t('chartVolume', { count: Number(nearest.volume || 0).toLocaleString('zh-CN') });
+    const maVal = maMap.get(nearest.time);
+    let selText = new Date(nearest.time * 1000).toLocaleDateString('zh-CN') + ' / ' + formatMoney(nearest.value) + ' / ' + t('chartVolume', { count: Number(nearest.volume || 0).toLocaleString('zh-CN') });
+    if (maVal !== undefined) selText += ' / ' + t('chartMaLabel', { price: formatMoney(Math.round(maVal)) });
+    $('chart-selection').textContent = selText;
+
     const pointX = x(nearest.time);
     const pointY = y(nearest.value);
     hover.setAttribute('visibility', 'visible');
     hoverLine.setAttribute('x1', String(pointX));
     hoverLine.setAttribute('x2', String(pointX));
+    hoverHLine.setAttribute('y1', String(pointY));
+    hoverHLine.setAttribute('y2', String(pointY));
     hoverDot.setAttribute('cx', String(pointX));
     hoverDot.setAttribute('cy', String(pointY));
+    yPillBg.setAttribute('y', String(clamp(pointY - 9, margin.top, priceBottom - 18)));
+    yPillText.setAttribute('y', String(clamp(pointY + 4, margin.top + 13, priceBottom - 5)));
+    yPillText.textContent = formatMoney(nearest.value);
 
-    const tipWidth = 176;
-    const tipHeight = 54;
-    let tipX = pointX + 12;
-    if (tipX + tipWidth > width - 6) tipX = pointX - tipWidth - 12;
-    if (tipX < 6) tipX = 6;
-    let tipY = pointY - tipHeight - 12;
+    clearBarHighlight();
+    if (volBars[activePoint]) {
+      volBars[activePoint].classList.add('active');
+      lastBarIndex = activePoint;
+    }
+
+    const tipWidth = 196;
+    const tipHeight = maVal !== undefined ? 76 : 62;
+    tooltipBg.setAttribute('height', String(tipHeight));
+    let tipX = pointX + 14;
+    if (tipX + tipWidth > width - 6) tipX = pointX - tipWidth - 14;
+    if (tipX < margin.left + 4) tipX = margin.left + 4;
+    let tipY = pointY - tipHeight - 10;
     if (tipY < 6) tipY = pointY + 12;
     if (tipY + tipHeight > height - 6) tipY = height - tipHeight - 6;
 
     tooltipBg.setAttribute('x', String(tipX));
     tooltipBg.setAttribute('y', String(tipY));
     tooltipDate.setAttribute('x', String(tipX + 10));
-    tooltipDate.setAttribute('y', String(tipY + 17));
+    tooltipDate.setAttribute('y', String(tipY + 16));
     tooltipDate.textContent = new Date(nearest.time * 1000).toLocaleDateString('zh-CN', {
       year: 'numeric',
       month: '2-digit',
@@ -1269,9 +1758,20 @@ function drawPriceChart(points, current, days) {
     });
     tooltipPrice.setAttribute('x', String(tipX + 10));
     tooltipPrice.setAttribute('y', String(tipY + 34));
-    tooltipPrice.textContent = formatMoney(nearest.value);
-    tooltipVolume.setAttribute('x', String(tipX + 10));
-    tooltipVolume.setAttribute('y', String(tipY + 48));
+    const diffPct = current > 0 ? ((nearest.value - current) / current) * 100 : null;
+    tooltipPrice.textContent = formatMoney(nearest.value) + (diffPct === null ? '' : ' (' + formatPct(diffPct) + ')');
+
+    if (maVal !== undefined) {
+      tooltipMeta.setAttribute('x', String(tipX + 10));
+      tooltipMeta.setAttribute('y', String(tipY + 50));
+      tooltipMeta.textContent = t('chartMaLabel', { price: formatMoney(Math.round(maVal)) });
+      tooltipVolume.setAttribute('x', String(tipX + 10));
+      tooltipVolume.setAttribute('y', String(tipY + 65));
+    } else {
+      tooltipMeta.textContent = '';
+      tooltipVolume.setAttribute('x', String(tipX + 10));
+      tooltipVolume.setAttribute('y', String(tipY + 51));
+    }
     tooltipVolume.textContent = t('chartVolume', {
       count: Number(nearest.volume || 0).toLocaleString('en-US'),
     });
@@ -1283,13 +1783,13 @@ function drawPriceChart(points, current, days) {
     const target = minTime + ((localX - margin.left) / innerWidth) * timeSpan;
     showPoint(nearestPoint(points, target));
   };
-  svg.onpointerleave = () => { hover.setAttribute('visibility', 'hidden'); };
+  svg.onpointerleave = () => { hover.setAttribute('visibility', 'hidden'); clearBarHighlight(); };
   svg.onfocus = () => showPoint(activePoint);
-  svg.onblur = () => hover.setAttribute('visibility', 'hidden');
+  svg.onblur = () => { hover.setAttribute('visibility', 'hidden'); clearBarHighlight(); };
   svg.onkeydown = (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
     event.preventDefault();
-    if (event.key === 'Escape') { hover.setAttribute('visibility', 'hidden'); return; }
+    if (event.key === 'Escape') { hover.setAttribute('visibility', 'hidden'); clearBarHighlight(); return; }
     showPoint(event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : activePoint + (event.key === 'ArrowLeft' ? -1 : 1));
   };
 }
@@ -1411,6 +1911,57 @@ function bind() {
     renderQuantity(); saveSettings(); updateQueryUrl();
   });
   $('quantity').addEventListener('change', () => { $('quantity').value = state.quantity; });
+  for (const btn of document.querySelectorAll('.qty-btn')) {
+    btn.addEventListener('click', () => {
+      state.quantity = clamp(Math.trunc(num(btn.dataset.qty, 1)), 1, 10000);
+      $('quantity').value = String(state.quantity);
+      renderQuantity(); saveSettings(); updateQueryUrl();
+    });
+  }
+
+  if ($('custom-buyer')) {
+    $('custom-buyer').addEventListener('input', () => updateCustomFromBuyer('input'));
+    $('custom-receive').addEventListener('input', () => updateCustomFromReceive());
+    $('custom-slider').addEventListener('input', () => updateCustomFromBuyer('slider'));
+    $('copy-custom-buyer').addEventListener('click', () => copyCustomPrice('buyerPays'));
+    $('copy-custom-receive').addEventListener('click', () => copyCustomPrice('receive'));
+    $('reset-custom').addEventListener('click', () => { if (state.quote) syncCustomCalcFromQuote(state.quote); });
+  }
+
+  if ($('toggle-ma')) {
+    $('toggle-ma').addEventListener('click', () => {
+      state.showMa = !state.showMa;
+      $('toggle-ma').setAttribute('aria-pressed', String(state.showMa));
+      saveSettings();
+      if (state.history) renderHistoryChart();
+    });
+  }
+  if ($('toggle-vol')) {
+    $('toggle-vol').addEventListener('click', () => {
+      state.showVolume = !state.showVolume;
+      $('toggle-vol').setAttribute('aria-pressed', String(state.showVolume));
+      saveSettings();
+      if (state.history) renderHistoryChart();
+    });
+  }
+
+  for (const chip of document.querySelectorAll('.quick-chip')) {
+    chip.addEventListener('click', () => {
+      const appId = Number(chip.dataset.app);
+      const name = chip.dataset.name || '';
+      if (!name) return;
+      if (Number.isSafeInteger(appId) && appId > 0) {
+        ensureAppOption(appId);
+        state.appId = appId;
+        $('app-select').value = String(appId);
+      }
+      $('item-name').value = name;
+      $('clear-input').hidden = false;
+      saveSettings();
+      calculate();
+    });
+  }
+
   $('export-history').addEventListener('click', exportHistory);
   $('chart-table-details').addEventListener('toggle', () => { if ($('chart-table-details').open) renderChartTable(); });
   $('refresh-quote').addEventListener('click', () => calculate({ refresh: true }));
@@ -1468,7 +2019,7 @@ async function checkHealth() {
   const network = $('network');
   const text = $('network-text');
   try {
-    const data = await fetchJson('/api/health', { timeoutMs: 8000 });
+    const data = await fetchJson('./api/health', { timeoutMs: 8000 });
     if (!data || !data.ok) throw new Error('offline');
     const proxy = data.proxy && data.proxy !== 'direct' ? data.proxy : '';
     network.classList.remove('offline', 'online', 'proxy');

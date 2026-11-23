@@ -6,11 +6,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createApp } from '../app/app.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const playwrightModule = process.env.PLAYWRIGHT_MODULE
-  ? pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href
-  : 'playwright-core';
-const { chromium } = await import(playwrightModule);
-const out = process.env.UI_EVIDENCE_DIR || path.resolve(root, '.ui-evidence');
+const modulePath = process.env.PLAYWRIGHT_MODULE || path.resolve(root, '../.toolchain/ui-review/node_modules/playwright-core/index.mjs');
+if (!fs.existsSync(modulePath)) throw new Error('Set PLAYWRIGHT_MODULE to an installed playwright-core index.mjs.');
+const { chromium } = await import(pathToFileURL(modulePath));
+const out = process.env.UI_EVIDENCE_DIR || path.resolve(root, '../.toolchain/out/steam-redesign-0.5.0');
 fs.mkdirSync(out, { recursive: true });
 let quoteCalls = 0;
 const item = { appId: 730, name: 'Clutch Case', hashName: 'Clutch Case', appName: 'Counter-Strike 2', type: 'Container', iconUrl: '', sellListings: 100 };
@@ -23,17 +22,24 @@ const steam = {
     return { currency: 23, fetchedAt: new Date().toISOString(), points: Array.from({ length: 365 }, (_, i) => ({ time: now - (364 - i) * 86400, price: 3.2 + Math.sin(i / 12) * .35 + i / 1000, volume: 100 + i })) };
   },
 };
-const server = http.createServer(createApp({ steam, version: '0.3.0-test', publicDir: path.join(root, 'app/public') }));
+const mount = '/steam/';
+const app = createApp({ steam, version: '0.5.0-test', publicDir: path.join(root, 'app/public') });
+const server = http.createServer((req, res) => {
+  if (!req.url.startsWith(mount)) {
+    res.writeHead(404).end();
+    return;
+  }
+  req.url = req.url.slice(mount.length - 1);
+  app(req, res);
+});
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const base = 'http://127.0.0.1:' + server.address().port;
+const base = 'http://127.0.0.1:' + server.address().port + mount;
 let browser;
 const errors = [];
 const checks = [];
 function pass(name) { checks.push(name); console.log('PASS ' + name); }
 try {
-  const executablePath = process.env.BROWSER_EXECUTABLE;
-  const channel = !executablePath && process.platform === 'win32' ? 'msedge' : undefined;
-  browser = await chromium.launch({ executablePath, channel, headless: true, args: ['--use-mock-keychain', '--password-store=basic'] });
+  browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true, args: ['--use-mock-keychain', '--password-store=basic'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -53,8 +59,12 @@ try {
     });
     await page.screenshot(options);
   }
+  const stylesheet = page.waitForResponse(base + 'styles.css');
   await page.goto(base);
-  await page.waitForFunction(() => document.querySelector('#version').textContent.includes('0.3.0'));
+  assert.equal((await stylesheet).status(), 200);
+  assert.ok(await page.locator('.brand-mark svg').evaluate((svg) => svg.getBoundingClientRect().width < 64));
+  await page.waitForFunction(() => document.querySelector('#version').textContent.includes('0.5.0'));
+  pass('stylesheet and health load through the reverse proxy prefix');
   await capture({ path: path.join(out, 'desktop-empty.png') });
   await page.click('#calculate');
   assert.equal(await page.getAttribute('#item-name', 'aria-invalid'), 'true');
@@ -88,6 +98,23 @@ try {
   assert.equal(await page.getAttribute('#favorite-quote', 'aria-pressed'), 'true');
   pass('quantity, favorites, and share query survive reload');
   await page.waitForSelector('#price-chart .price-line');
+  assert.ok(await page.locator('#price-chart .ma-line').count() === 1);
+  assert.ok(await page.locator('#price-chart .vol-bar').count() > 30);
+  await page.click('#toggle-ma');
+  assert.equal(await page.locator('#price-chart .ma-line').count(), 0);
+  await page.click('#toggle-ma');
+  assert.equal(await page.locator('#price-chart .ma-line').count(), 1);
+  pass('chart MA7 and volume overlay render and toggle cleanly');
+  await page.fill('#custom-receive', '5.00');
+  assert.match(await page.inputValue('#custom-buyer'), /^\d+\.\d{2}$/);
+  assert.notEqual(await page.inputValue('#custom-buyer'), '5.00');
+  await page.click('#copy-custom-buyer');
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.inputValue('#custom-buyer'));
+  await page.click('#reset-custom');
+  pass('custom price calculator supports reverse receive calculation and copy');
+  await page.click('#favorites-list .side-action-pin');
+  assert.equal(await page.getAttribute('#favorites-list .side-action-pin', 'aria-pressed'), 'true');
+  pass('favorites can be pinned in sidebar');
   await page.focus('#price-chart');
   await page.keyboard.press('Home');
   const first = await page.textContent('#chart-selection');
@@ -172,7 +199,7 @@ try {
   const blocked = await context.newPage();
   await blocked.addInitScript(() => { Storage.prototype.setItem = function () { throw new DOMException('Storage blocked', 'SecurityError'); }; });
   blocked.on('pageerror', (error) => errors.push(error.message));
-  await blocked.goto(base + '/?name=Clutch%20Case');
+  await blocked.goto(base + '?name=Clutch%20Case');
   await blocked.waitForFunction(() => !document.querySelector('#calculate').disabled && !document.querySelector('#result').hidden);
   await blocked.click('#favorite-quote');
   assert.match(await blocked.textContent('#toast'), /\u5b58\u50a8\u4e0d\u53ef\u7528/);
