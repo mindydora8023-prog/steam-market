@@ -96,7 +96,7 @@ test('URL budget rejects before parsing or dispatch and preserves security heade
 
 test('browser can load only the allowlisted shared modules', async (t) => {
   const app = await fixture(t);
-  for (const name of ['batch.js', 'currency.js', 'fees.js', 'integer.js', 'quote.js']) {
+  for (const name of ['batch.js', 'currency.js', 'fees.js', 'integer.js', 'inventory.js', 'quote.js']) {
     const res = await app.get('/shared/' + name);
     assert.equal(res.status, 200, name);
     assert.match(res.headers.get('content-type'), /javascript/);

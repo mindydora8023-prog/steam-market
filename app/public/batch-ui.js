@@ -1,5 +1,5 @@
 import {
-  addBatchRow, batchAmount, batchCsv, batchMarkdown, cleanBatch, estimateBatch,
+  addBatchRow, addBatchRows, batchAmount, batchCsv, batchMarkdown, cleanBatch, estimateBatch, fillBatchPrices,
   MAX_BATCH_QUANTITY, parseBatchPrice,
 } from './shared/batch.js';
 import { currencyInfo } from './shared/currency.js';
@@ -123,7 +123,7 @@ export function createBatch({ t, toast, copyText, downloadCsv }) {
       hint.textContent = !line.price
         ? line.minimum
           ? t('batchPriceFloor', { price: priceText(line.minimum, line.currency) })
-          : t('batchNoStrategyPrice')
+          : t(line.unpriced ? 'batchAwaitPrice' : 'batchNoStrategyPrice')
         : line.strategy === 'custom' && line.price.buyerPays !== line.priceOverride
           ? t('batchPriceAdjusted', { price: priceText(line.price.buyerPays, line.currency) })
           : '';
@@ -213,6 +213,29 @@ export function createBatch({ t, toast, copyText, downloadCsv }) {
     message(t('batchAdded', { name: quote.item.hashName }));
   }
 
+  function importRows(snapshots, button, closeSource) {
+    const result = addBatchRows(data.rows, snapshots);
+    if (!result.ok) return result.code;
+    data.rows = result.rows;
+    cleared = null;
+    save();
+    renderRows();
+    closeSource();
+    open(button);
+    message(t('batchImported', { kinds: snapshots.length }));
+    return null;
+  }
+
+  function fillPrices(snapshots) {
+    const result = fillBatchPrices(data.rows, snapshots);
+    if (result.updated) {
+      data.rows = result.rows;
+      save();
+      renderRows();
+    }
+    return result.updated;
+  }
+
   read();
   renderRows();
   opener.addEventListener('click', () => open(opener));
@@ -250,5 +273,5 @@ export function createBatch({ t, toast, copyText, downloadCsv }) {
     renderRows();
   });
 
-  return { add };
+  return { add, fillPrices, importRows, open };
 }

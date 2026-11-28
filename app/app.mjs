@@ -5,7 +5,7 @@ import { serveStatic } from './static.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_URL_BYTES = 8192;
-const SHARED_MODULES = new Set(['batch.js', 'currency.js', 'fees.js', 'integer.js', 'quote.js']);
+const SHARED_MODULES = new Set(['batch.js', 'currency.js', 'fees.js', 'integer.js', 'inventory.js', 'quote.js']);
 const LIB_ROOT = path.join(APP_ROOT, 'lib');
 
 const CSP = [

@@ -4,6 +4,8 @@ import http from 'node:http';
 import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createApp } from '../app/app.mjs';
+import { MarketError } from '../app/steam.mjs';
+import { summarizeInventory } from '../lib/inventory.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const modulePath = process.env.PLAYWRIGHT_MODULE || path.join(root, 'node_modules/playwright-core/index.mjs');
@@ -14,10 +16,56 @@ const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 
 fs.mkdirSync(out, { recursive: true });
 let quoteCalls = 0;
 const item = { appId: 730, name: 'Clutch Case', hashName: 'Clutch Case', appName: 'Counter-Strike 2', type: 'Container', iconUrl: '', sellListings: 100 };
+const inventoryQuotes = [];
+let activeInventoryQuotes = 0;
+let maxInventoryQuotes = 0;
+const inventoryItems = [
+  ['Regular card', 3, 'card', false],
+  ['Foil card', 2, 'card', true],
+  ['Fee floor card', 1, 'card', false],
+  ['No market card', 1, 'card', false],
+  ['Background', 4, 'background', false],
+].map(([name, count, type, foil]) => ({
+  appId: 753, hashName: name, name, type, foil, count, iconUrl: '',
+  gameKey: type === 'card' ? 'app_100' : 'app_101',
+  gameName: type === 'card' ? 'A Game with a Long Name' : 'Other Game',
+}));
+// Keep two distinct games in the default cards-only view.
+inventoryItems[3].gameKey = 'app_102';
+inventoryItems[3].gameName = 'Another Card Game';
+
 const steam = {
   proxyLabel: 'direct',
   async search(appId, query) { return { results: query === 'none' ? [] : [{ ...item, appId }], fetchedAt: new Date().toISOString() }; },
-  async price() { quoteCalls++; return { ok: true, lowest: 361, median: 356, volume: 6159, fetchedAt: new Date().toISOString() }; },
+  async price(appId, name) {
+    quoteCalls++;
+    const fetchedAt = new Date().toISOString();
+    if (appId !== 753) return { ok: true, lowest: 361, median: 356, volume: 6159, fetchedAt };
+    inventoryQuotes.push({ name, time: Date.now() });
+    activeInventoryQuotes++;
+    maxInventoryQuotes = Math.max(maxInventoryQuotes, activeInventoryQuotes);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      if (name === 'Foil card' && inventoryQuotes.filter((call) => call.name === name).length === 1) {
+        throw new MarketError('rate-limited', 'Fixture rate limit', { status: 429, retryAfterMs: 1600 });
+      }
+      if (name === 'Fee floor card' && inventoryQuotes.filter((call) => call.name === name).length === 1) {
+        throw new MarketError('upstream', 'Fixture upstream error');
+      }
+      if (name === 'No market card') return { ok: false, code: 'no-market-data', fetchedAt };
+      const lowest = { 'Regular card': 30, 'Foil card': 110, 'Fee floor card': 21 }[name] || 50;
+      return { ok: true, lowest, median: lowest, volume: 50, fetchedAt };
+    } finally {
+      activeInventoryQuotes--;
+    }
+  },
+  async inventory(input, { onlyCards }) {
+    if (input.endsWith('/private-fixture')) throw new MarketError('inventory-private', 'Private', { status: 403 });
+    return {
+      ...summarizeInventory(inventoryItems, onlyCards), steamId: '76561198000000001',
+      pages: onlyCards ? 1 : 5, truncated: !onlyCards, cached: false,
+    };
+  },
   async history() {
     const now = Math.floor(Date.now() / 1000);
     return { currency: 23, fetchedAt: new Date().toISOString(), points: Array.from({ length: 365 }, (_, i) => ({ time: now - (364 - i) * 86400, price: 3.2 + Math.sin(i / 12) * .35 + i / 1000, volume: 100 + i })) };
@@ -303,6 +351,156 @@ try {
   assert.equal(await batchPage.locator('.batch-row').count(), 1);
   await batchContext.close();
   pass('batch dialog fits narrow viewports and zoom; removing a row persists');
+
+  const inventoryContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+  const inventoryPage = await inventoryContext.newPage();
+  inventoryPage.on('pageerror', (error) => errors.push(error.message));
+  inventoryPage.setDefaultTimeout(8000);
+  await inventoryPage.addInitScript(() => {
+    localStorage.setItem('steam-price-batch-v1', JSON.stringify({ rows: [{
+      appId: 753, name: 'Regular card', currency: 8, quantity: 1,
+      lowest: 29, median: 28, undercut: 1, steamFee: 5, publisherFee: 10,
+    }] }));
+  });
+  await inventoryPage.goto(base);
+  await inventoryPage.locator('#batch-open[aria-label]').waitFor();
+  await inventoryPage.click('#inventory-open');
+  await inventoryPage.fill('#inventory-profile', 'https://steamcommunity.com/id/private-fixture');
+  await inventoryPage.click('#inventory-load');
+  await inventoryPage.waitForFunction(() => document.querySelector('#inventory-load-status').textContent.includes('\u9690\u79c1'));
+  await inventoryPage.fill('#inventory-profile', 'https://steamcommunity.com/id/card-seller');
+  await inventoryPage.click('#inventory-load');
+  await inventoryPage.waitForSelector('#inventory-results:not([hidden])');
+  assert.equal(await inventoryPage.locator('.inventory-row').count(), 4);
+  assert.equal(await inventoryPage.textContent('#inventory-quantity'), '7');
+  assert.equal(await inventoryPage.textContent('#inventory-foils'), '2');
+  assert.equal(await inventoryPage.textContent('#inventory-games'), '2');
+  await inventoryPage.check('#inventory-other');
+  await inventoryPage.click('#inventory-load');
+  await inventoryPage.waitForFunction(() => document.querySelectorAll('.inventory-row').length === 5);
+  assert.equal(await inventoryPage.textContent('#inventory-quantity'), '11');
+  assert.ok(await inventoryPage.isVisible('#inventory-truncated'));
+  await inventoryPage.selectOption('#inventory-game', 'game:app_101');
+  assert.equal(await inventoryPage.locator('.inventory-row').count(), 1);
+  await inventoryPage.uncheck('#inventory-select-visible');
+  await inventoryPage.selectOption('#inventory-game', 'all');
+  await inventoryPage.check('#inventory-foil');
+  assert.equal(await inventoryPage.locator('.inventory-row').count(), 1);
+  assert.match(await inventoryPage.locator('.inventory-name').textContent(), /Foil/);
+  assert.match(await inventoryPage.textContent('#inventory-selection'), /\u7b5b\u9009\u5916 3.*5/);
+  await inventoryPage.uncheck('#inventory-foil');
+  assert.match(await inventoryPage.textContent('#inventory-selection'), /4.*7/);
+  pass('inventory drawer handles private profiles, card totals, community items, game and foil filters');
+
+  await inventoryPage.selectOption('#inventory-mode', 'review');
+  await inventoryPage.click('#inventory-import');
+  await inventoryPage.waitForSelector('#batch-dialog[open]');
+  const foilRow = inventoryPage.locator('.batch-row').filter({ hasText: 'Foil card' });
+  assert.equal(await foilRow.locator('.batch-quantity').inputValue(), '2');
+  assert.equal(await inventoryPage.isDisabled('#batch-download'), true);
+  await inventoryPage.click('#batch-close');
+  await inventoryPage.click('#inventory-open');
+
+  await inventoryPage.click('#inventory-start');
+  await inventoryPage.waitForFunction(() => document.querySelector('#inventory-run-status').textContent.includes('\u9650\u6d41'));
+  assert.match(await inventoryPage.textContent('#inventory-progress-label'), /1\/4/);
+  assert.match(await inventoryPage.textContent('#inventory-net'), /0\.45 CNY/);
+  assert.equal(await inventoryPage.isDisabled('#inventory-start'), true);
+  assert.equal(inventoryQuotes.length, 2);
+  await inventoryPage.waitForFunction(() => !document.querySelector('#inventory-start').disabled);
+  await inventoryPage.click('#inventory-start');
+  await inventoryPage.waitForFunction(() => document.querySelector('#inventory-progress').value === 2);
+  await inventoryPage.click('#inventory-pause');
+  await inventoryPage.click('#inventory-cancel');
+  assert.match(await inventoryPage.textContent('#inventory-run-status'), /\u53d6\u6d88/);
+  await inventoryPage.waitForFunction(() => !document.querySelector('#inventory-start').disabled);
+  assert.equal(inventoryQuotes.length, 3);
+  await inventoryPage.click('#inventory-start');
+  await inventoryPage.waitForFunction(() => document.querySelector('#inventory-run-status').textContent.includes('\u91cd\u8bd5'));
+  assert.match(await inventoryPage.textContent('#inventory-progress-label'), /2\/4/);
+  await inventoryPage.click('#inventory-start');
+  await inventoryPage.waitForFunction(() => document.querySelector('#inventory-progress').value === 4);
+  assert.deepEqual(inventoryQuotes.map(({ name }) => name), [
+    'Regular card', 'Foil card', 'Foil card', 'Fee floor card', 'Fee floor card', 'No market card',
+  ]);
+  assert.equal(maxInventoryQuotes, 1);
+  for (let index = 1; index < inventoryQuotes.length; index++) {
+    assert.ok(inventoryQuotes[index].time - inventoryQuotes[index - 1].time >= 1100);
+  }
+  assert.equal(await inventoryPage.locator('[data-tier="review"]').count(), 1);
+  assert.equal(await inventoryPage.locator('[data-tier="regular"]').count(), 1);
+  assert.equal(await inventoryPage.locator('[data-tier="thin"]').count(), 1);
+  pass('inventory prices one item at a time, preserves quotes across 429, pause and cancel, retries upstream failures, and assigns tiers');
+
+  assert.match(await inventoryPage.textContent('#inventory-transfer-status'), /\u8865\u4e0a\u884c\u60c5/);
+  assert.match(await inventoryPage.textContent('#inventory-import'), /\u67e5\u770b/);
+  await inventoryPage.click('#inventory-import');
+  await inventoryPage.waitForSelector('#batch-dialog[open]');
+  assert.equal(await inventoryPage.locator('.batch-row').count(), 2);
+  assert.equal(await foilRow.locator('.batch-quantity').inputValue(), '2');
+  assert.equal(await inventoryPage.isEnabled('#batch-download'), true);
+  await inventoryPage.click('#batch-close');
+  await inventoryPage.click('#inventory-open');
+  await inventoryPage.selectOption('#inventory-mode', 'all');
+  pass('pricing a previously imported card fills the batch price without adding copies');
+
+  const inventoryDownload = inventoryPage.waitForEvent('download');
+  await inventoryPage.click('#inventory-export');
+  const inventoryCsvFile = await inventoryDownload;
+  assert.equal(inventoryCsvFile.suggestedFilename(), 'steam-market-inventory.csv');
+  const inventoryCsv = fs.readFileSync(await inventoryCsvFile.path(), 'utf8');
+  assert.match(inventoryCsv, /"Regular card","753","CNY","3","0\.29","0\.15","0\.45"/);
+  assert.doesNotMatch(inventoryCsv, /No market card|Background/);
+  await inventoryPage.screenshot({ path: path.join(out, 'inventory-desktop.png') });
+
+  for (const width of [320, 390]) {
+    await inventoryPage.setViewportSize({ width, height: 844 });
+    await inventoryPage.click('#inventory-close');
+    assert.ok(await inventoryPage.evaluate(() => {
+      const toolbar = document.querySelector('.topbar-inner');
+      return toolbar.scrollWidth <= toolbar.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth + 1;
+    }), 'inventory entry overflows at ' + width);
+    await inventoryPage.click('#inventory-open');
+    assert.ok(await inventoryPage.evaluate(() => {
+      const dialog = document.querySelector('#inventory-dialog');
+      const body = dialog.querySelector('.inventory-body');
+      const footer = dialog.querySelector('.inventory-actions');
+      return dialog.scrollWidth <= dialog.clientWidth + 1 && body.scrollWidth <= body.clientWidth + 1 &&
+        footer.scrollWidth <= footer.clientWidth + 1 &&
+        document.querySelector('#inventory-import').getBoundingClientRect().bottom <= innerHeight + 1;
+    }), 'inventory drawer overflows at ' + width);
+    if (width === 390) await inventoryPage.screenshot({ path: path.join(out, 'inventory-mobile.png') });
+  }
+  await inventoryPage.setViewportSize({ width: 1440, height: 1000 });
+  await inventoryPage.evaluate(() => { document.documentElement.style.zoom = '2'; });
+  assert.ok(await inventoryPage.evaluate(() => {
+    const dialog = document.querySelector('#inventory-dialog');
+    const body = dialog.querySelector('.inventory-body');
+    return body.scrollWidth <= body.clientWidth + 1 && dialog.getBoundingClientRect().left >= -1 &&
+      document.querySelector('#inventory-import').getBoundingClientRect().bottom <= innerHeight + 1;
+  }), 'inventory layout at 200 percent zoom');
+  pass('inventory entry and drawer fit 320px, 390px and 200 percent zoom');
+
+  await inventoryPage.selectOption('#inventory-mode', 'regular');
+  await inventoryPage.click('#inventory-import');
+  await inventoryPage.waitForSelector('#batch-dialog[open]');
+  assert.equal(await inventoryPage.locator('.batch-row').count(), 3);
+  assert.deepEqual(await inventoryPage.locator('.batch-quantity').evaluateAll((inputs) => inputs.map((input) => input.value)), ['1', '2', '3']);
+  await inventoryPage.keyboard.press('Escape');
+  await inventoryPage.waitForFunction(() => document.activeElement.id === 'inventory-open');
+  await inventoryPage.click('#inventory-open');
+  await inventoryPage.selectOption('#inventory-mode', 'all');
+  await inventoryPage.click('#inventory-import');
+  await inventoryPage.waitForSelector('#batch-dialog[open]');
+  assert.equal(await inventoryPage.locator('.batch-row').count(), 5);
+  assert.match(await inventoryPage.textContent('#batch-total-count'), /8/);
+  assert.deepEqual((await inventoryPage.locator('.batch-currency h3').allTextContents()).map((text) => text.slice(0, 3)), ['JPY', 'CNY']);
+  assert.equal(await inventoryPage.isDisabled('#batch-download'), true);
+  const pendingRow = inventoryPage.locator('.batch-row').filter({ hasText: 'No market card' });
+  await pendingRow.locator('.batch-price').fill('0.29');
+  assert.equal(await inventoryPage.isEnabled('#batch-download'), true);
+  await inventoryContext.close();
+  pass('inventory exports priced rows and transfers full quantities, pending rows and isolated currencies to the batch');
 
   const blocked = await context.newPage();
   await blocked.addInitScript(() => { Storage.prototype.setItem = function () { throw new DOMException('Storage blocked', 'SecurityError'); }; });

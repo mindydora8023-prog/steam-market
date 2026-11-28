@@ -27,6 +27,7 @@
       </div>
       <div class="topbar-right">
         <span class="kbd-hint muted small" aria-hidden="true">按 <kbd>/</kbd> 聚焦查询</span>
+        <button id="inventory-open" class="ghost" type="button" aria-haspopup="dialog">卡牌库存</button>
         <button id="batch-open" class="ghost" type="button" aria-haspopup="dialog">批量清单 <span id="batch-count" hidden></span></button>
         <div class="network" id="network" title="本地服务状态与连接模式配置，不代表已验证 Steam 连通">
           <span class="dot" id="network-dot"></span>
@@ -407,6 +408,94 @@
     <span>价格会变化，请刷新后再确认</span>
   </footer>
 
+
+  <dialog id="inventory-dialog" class="batch-dialog" aria-labelledby="inventory-title">
+    <div class="batch-shell">
+      <header class="batch-head">
+        <div>
+          <h2 id="inventory-title">卡牌库存</h2>
+          <p id="inventory-currency" class="muted small" hidden></p>
+        </div>
+        <button id="inventory-close" class="ghost" type="button">关闭</button>
+      </header>
+      <div class="batch-body inventory-body">
+        <form id="inventory-form">
+          <div class="inventory-lookup">
+            <label class="field">
+              <span>SteamID64 或 Steam 主页链接</span>
+              <input id="inventory-profile" type="text" maxlength="500" autocomplete="off" spellcheck="false"
+                placeholder="76561198… 或 steamcommunity.com/id/…" aria-describedby="inventory-help inventory-load-status" autofocus>
+            </label>
+            <button id="inventory-load" class="primary" type="submit">读取公开库存</button>
+          </div>
+          <label class="inventory-check"><input id="inventory-other" type="checkbox"> 包含背景、表情及其他可交易物品</label>
+          <p id="inventory-help" class="muted small">在 Steam 的个人资料隐私设置中将库存设为公开。读取时无需登录。</p>
+          <p id="inventory-load-status" class="small inventory-status" role="status"></p>
+        </form>
+
+        <section id="inventory-results" aria-label="库存物品" hidden>
+          <dl class="inventory-metrics batch-currency batch-metrics">
+            <div><dt>库存总件数</dt><dd id="inventory-quantity"></dd></div>
+            <div><dt>种类</dt><dd id="inventory-kinds"></dd></div>
+            <div><dt>闪卡张数</dt><dd id="inventory-foils"></dd></div>
+            <div><dt>游戏数</dt><dd id="inventory-games"></dd></div>
+          </dl>
+          <p id="inventory-truncated" class="batch-warning small" role="status" hidden></p>
+          <div class="inventory-filters">
+            <label class="field"><span>游戏</span><select id="inventory-game"></select></label>
+            <label class="inventory-check"><input id="inventory-foil" type="checkbox"> 仅看闪卡</label>
+            <label class="inventory-check"><input id="inventory-select-visible" type="checkbox"> 勾选当前列表</label>
+          </div>
+          <p id="inventory-selection" class="muted small" role="status"></p>
+          <ul id="inventory-items" class="batch-rows"></ul>
+          <p id="inventory-no-match" class="muted small" hidden>当前筛选没有匹配项。</p>
+        </section>
+      </div>
+      <footer id="inventory-actions" class="batch-foot inventory-actions" hidden>
+        <div class="inventory-progress">
+          <p id="inventory-progress-label" class="muted small" role="status"></p>
+          <strong id="inventory-net" class="batch-net small"></strong>
+          <progress id="inventory-progress" max="1" value="0" aria-label="库存估价进度"></progress>
+        </div>
+        <div class="batch-exports">
+          <button id="inventory-start" class="primary" type="button">开始逐件估价</button>
+          <button id="inventory-pause" class="ghost" type="button" hidden>暂停</button>
+          <button id="inventory-cancel" class="ghost" type="button" hidden>取消</button>
+        </div>
+        <p id="inventory-run-status" class="small inventory-status" role="status"></p>
+        <div class="inventory-transfer">
+          <label class="field"><span>导入范围</span>
+            <select id="inventory-mode">
+              <option value="all">全部勾选项</option>
+              <option value="priced">仅已估价项</option>
+              <option value="regular">仅常规卡</option>
+              <option value="review">仅高价卡和闪卡</option>
+            </select>
+          </label>
+          <button id="inventory-import" class="ghost" type="button">导入批量清单</button>
+          <button id="inventory-export" class="ghost" type="button">导出 CSV</button>
+        </div>
+        <p id="inventory-transfer-status" class="small inventory-status" role="status"></p>
+      </footer>
+    </div>
+  </dialog>
+
+  <template id="inventory-item-template">
+    <li class="inventory-row">
+      <label class="inventory-item">
+        <input class="inventory-pick" type="checkbox">
+        <img class="inventory-icon" alt="" width="32" height="32" loading="lazy" crossorigin="anonymous" hidden>
+        <span class="inventory-item-copy">
+          <strong class="inventory-name"></strong>
+          <span class="inventory-item-meta muted small"></span>
+        </span>
+      </label>
+      <div class="inventory-price">
+        <span class="inventory-tier small"></span>
+        <span class="inventory-unit muted small"></span>
+      </div>
+    </li>
+  </template>
 
   <dialog id="batch-dialog" class="batch-dialog" aria-labelledby="batch-title">
     <div class="batch-shell">

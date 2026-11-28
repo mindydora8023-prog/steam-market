@@ -2,11 +2,13 @@
 
 [简体中文](README.md)
 
-**v0.6.0** · [![CI](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml/badge.svg)](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml) · [MIT](LICENSE)
+**v0.7.0** · [![CI](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml/badge.svg)](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml) · [MIT](LICENSE)
 
 Check the lowest active ask, recent median sale price, and sales volume on the Steam Community Market. The dark trading terminal compares four listing strategies, works backward from a target payout, and lets you estimate buyer payments, fees, and seller proceeds for a batch of items.
 
 The app uses public market data and runs on **Node.js 18.17+** with zero third-party runtime dependencies. You can look up prices without signing in or supplying Steam credentials. You place and confirm listings manually on Steam. The Chinese interface works on desktop and mobile.
+
+Load a public card inventory, sort the cards by game and price tier, and export a pricing sheet for your next sale.
 
 ## Quick start
 
@@ -37,10 +39,20 @@ pwsh -File .\scripts\open-app.ps1 -BaseUrl https://example.org/steam/
 3. Compare the gold **buyer price** and green **estimated payout**. The quote shows the currency, fetch time, and cache status. Switch strategies against the same snapshot, calculate payout from a buyer price, or work backward from your target payout.
 4. Copy an amount such as `3.60` into the Steam listing form. Confirm the price and fees there before you list the item.
 
+### Sell trading cards from a public inventory
+
+1. Open **Profile → Edit Profile → Privacy Settings** in Steam and set **Inventory** to **Public**. Follow [Steam Support's privacy instructions](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276).
+2. Open **卡牌库存** (Card inventory) in the app header, paste a 17-digit SteamID64 or a Steam Community profile link, and choose **读取公开库存** (Load public inventory). Both `/profiles/…` and `/id/…` links work. Use the SteamID64 if Steam cannot resolve a custom profile link. The default view shows marketable trading cards and combines copies of the same card. A checkbox adds backgrounds, emoticons, and other marketable community items. The importer reads up to five pages or 1,000 asset entries and marks partial results.
+3. Filter by game or foil, select the items you want, and start the price check. The importer uses the currency, fees, and undercut amount from when the inventory was loaded and calculates Smart strategy prices one at a time. Pause or cancel the remaining checks whenever you need to. If Steam rate limits requests, the tool keeps completed quotes and lets you resume after the countdown.
+4. Review **high-value and foil cards** individually. The tool uses fixed seller-net thresholds per currency, such as CNY 7, USD 1, or JPY 150. **Regular** items have an active listing and Steam's recent sale volume is at least 10. **Low-price or thin-volume** items are at the fee floor, lack an active listing, or have volume under 10.
+5. Import all selected items, only priced items, only regular cards, or only high-value and foil cards into the batch. Quantities and currencies carry over. Enter a manual buyer price for any unpriced row, or return to the inventory and finish pricing to fill its market data without adding more copies. You can also export the priced selection directly as CSV.
+
+Inventory and price checks use public data and require no Steam login, cookies, or API key. Review and confirm listings manually in Steam.
+
 ### Batch listing and portfolio estimation
 
 1. Click **加入清单** (Add to batch) on a quote to use its current quantity. Click **+** beside a favorite to look up the item in its saved currency and add one unit. Open the batch at any time from **批量清单** in the header.
-2. Pick one strategy for the batch, or enter a custom buyer price on a row. Clear that price to use the batch strategy again. Each row keeps the market snapshot, undercut amount, and fees from when it was added. Adding the same item, game, and currency again updates the snapshot and adds to the quantity while keeping any custom price. The batch holds up to 100 rows and 10,000 units per row.
+2. Pick one strategy for the batch, or enter a custom buyer price on a row. Clear that price to use the batch strategy again. Each row keeps the market snapshot, undercut amount, and fees from when it was added. Adding the same item, game, and currency again updates the snapshot and adds to the quantity while keeping any custom price. The batch holds up to 1,000 rows and 10,000 units per row.
 3. Review the total item count and each currency’s buyer payments, Steam fees, publisher fees, total fees, and estimated payout. Fees are rounded per item before multiplication. Totals update as you edit. The drawer flags invalid inputs or items that need a price.
 4. Copy the list as Markdown or download a CSV pricing sheet. Both include the item, App ID, currency, quantity, listing price, per-item payout, payout subtotal, both fees, and strategy. Markdown also includes a per-currency summary. The CSV uses UTF-8 with a BOM, decimal points, and a dedicated currency column.
 5. Remove individual rows or clear the batch and undo. The batch, favorites, history, and preferences are stored in your browser’s `localStorage`. If storage is blocked, the drawer warns you and keeps editing and exports available for that page session.

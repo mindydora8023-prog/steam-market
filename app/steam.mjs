@@ -1,7 +1,11 @@
-import { HttpClient, HttpError, RateLimiter, retryAfterMs } from '../lib/http.js';
+import { HttpClient, HttpError, parseJson, RateLimiter, retryAfterMs } from '../lib/http.js';
 import { parsePriceToMinor } from '../lib/currency.js';
 import { sleep } from '../lib/util.js';
 import { parsePriceHistoryHtml } from './history.mjs';
+import {
+  aggregateInventory, COMMUNITY_APP_ID, inventoryCursor, INVENTORY_PAGE_SIZE,
+  MAX_INVENTORY_PAGES, parseSteamProfile, parseVanitySteamId, summarizeInventory,
+} from '../lib/inventory.js';
 
 const SEARCH_URL = 'https://steamcommunity.com/market/search/render/';
 const PRICE_URL = 'https://steamcommunity.com/market/priceoverview/';
@@ -64,6 +68,7 @@ export class SteamMarket {
     searchIntervalMs = 1000,
     priceIntervalMs = 1200,
     historyIntervalMs = 1500,
+    inventoryIntervalMs = 1200,
     searchTtlMs = 5 * 60 * 1000,
     priceTtlMs = 60 * 1000,
     historyTtlMs = 10 * 60 * 1000,
@@ -78,6 +83,9 @@ export class SteamMarket {
     this.searchCache = new TTLCache(500);
     this.priceCache = new TTLCache(800);
     this.historyCache = new TTLCache(200);
+    this.inventoryCache = new TTLCache(32);
+    this.vanityCache = new TTLCache(128);
+    this.inventoryLimiter = new RateLimiter({ minIntervalMs: inventoryIntervalMs, jitterMs: inventoryIntervalMs ? 250 : 0 });
     this.searchTtlMs = searchTtlMs;
     this.priceTtlMs = priceTtlMs;
     this.historyTtlMs = historyTtlMs;
@@ -143,7 +151,7 @@ export class SteamMarket {
 
   async requestJson(url, headers, retried = false) {
     try {
-      return await this.boundedRequest(() => this.http.getJson(url, { headers, timeoutMs: this.requestTimeoutMs }));
+      return await this.boundedRequest(() => this.http.getJson(url, { headers, timeoutMs: this.requestTimeoutMs, cookies: false }));
     } catch (err) {
       const transient =
         err instanceof HttpError &&
@@ -158,7 +166,7 @@ export class SteamMarket {
 
   async requestText(url, headers, retried = false) {
     try {
-      return await this.boundedRequest(() => this.http.request(url, { headers, timeoutMs: this.requestTimeoutMs }));
+      return await this.boundedRequest(() => this.http.request(url, { headers, timeoutMs: this.requestTimeoutMs, cookies: false }));
     } catch (err) {
       const transient =
         err instanceof HttpError &&
@@ -169,6 +177,101 @@ export class SteamMarket {
       }
       throw this.toMarketError(err);
     }
+  }
+
+  async requestInventoryResource(url, accept, deadline) {
+    this.checkCooldown();
+    await this.inventoryLimiter.wait();
+    this.checkCooldown();
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs <= 0) throw new MarketError('inventory-upstream', 'Steam inventory request timed out.');
+    const response = await this.http.request(url, {
+      headers: { Accept: accept }, timeoutMs, redirects: 0, cookies: false,
+    });
+    if (response.status === 429) {
+      throw new MarketError('rate-limited', 'Steam is rate limiting requests.', {
+        status: 429, retryAfterMs: retryAfterMs(response.headers?.['retry-after']),
+      });
+    }
+    return response;
+  }
+
+  async resolveInventoryVanity(vanity) {
+    const cached = this.vanityCache.get(vanity);
+    if (cached) return cached;
+    return this.coalesce('inventory-vanity:' + vanity, () => {
+      const deadline = Date.now() + this.requestTimeoutMs;
+      return this.boundedRequest(async () => {
+        const response = await this.requestInventoryResource(
+          'https://steamcommunity.com/id/' + vanity + '/?xml=1', 'application/xml, text/xml', deadline,
+        );
+        const steamId = response.status === 200 ? parseVanitySteamId(response.text) : null;
+        if (!steamId) {
+          throw new MarketError('inventory-profile-unavailable', 'Steam profile could not be resolved.', { status: 404 });
+        }
+        this.vanityCache.set(vanity, steamId, 60 * 60 * 1000);
+        return steamId;
+      });
+    });
+  }
+
+  async inventory(input, { onlyCards = true } = {}) {
+    const profile = parseSteamProfile(input);
+    if (!profile) throw new MarketError('bad-request', 'Invalid Steam profile.', { status: 400 });
+    const steamId = profile.steamId || await this.resolveInventoryVanity(profile.vanity);
+    const cached = this.inventoryCache.get(steamId);
+    const snapshot = cached || await this.coalesce('inventory:' + steamId, () => {
+      const deadline = Date.now() + this.requestTimeoutMs;
+      return this.boundedRequest(() => this.fetchInventory(steamId, deadline));
+    });
+    const { items, ...metadata } = snapshot;
+    const summary = summarizeInventory(items, onlyCards);
+    if (!summary.kindCount && !metadata.truncated) {
+      throw new MarketError('inventory-empty', 'No marketable items match this inventory filter.', { status: 200 });
+    }
+    return { steamId, ...summary, ...metadata, cached: Boolean(cached) };
+  }
+
+  async fetchInventory(steamId, deadline) {
+    const pages = [];
+    const cursors = new Set();
+    let cursor = null;
+    let truncated = false;
+    let more = false;
+    for (let index = 0; index < MAX_INVENTORY_PAGES; index++) {
+      const params = new URLSearchParams({ l: 'english', count: String(INVENTORY_PAGE_SIZE) });
+      if (cursor) params.set('start_assetid', cursor);
+      const url = 'https://steamcommunity.com/inventory/' + steamId + '/' + COMMUNITY_APP_ID + '/6?' + params;
+      const response = await this.requestInventoryResource(url, 'application/json', deadline);
+      const page = parseJson(response.text);
+      const privateBody = /\b(?:private|not public)\b/i.test(String(page?.Error || page?.error || page || ''))
+        || /^private$/i.test(response.text.trim());
+      if ([401, 403].includes(response.status) ||
+          (response.status === 200 && (response.text.trim() === 'null' || (!isSuccess(page?.success) && privateBody)))) {
+        throw new MarketError('inventory-private', 'Steam inventory is private.', { status: 403 });
+      }
+      if (response.status !== 200 || !isSuccess(page?.success) ||
+          (!Array.isArray(page.assets) && !(Number(page.total_inventory_count) === 0 && page.assets == null))) {
+        throw new MarketError('inventory-upstream', 'Steam returned an invalid inventory response.');
+      }
+      const assets = page.assets || [];
+      truncated ||= assets.length > INVENTORY_PAGE_SIZE;
+      pages.push({
+        assets: assets.slice(0, INVENTORY_PAGE_SIZE),
+        descriptions: Array.isArray(page.descriptions) ? page.descriptions.slice(0, INVENTORY_PAGE_SIZE) : [],
+      });
+      more = isSuccess(page.more_items);
+      if (!more) break;
+      cursor = inventoryCursor(page.last_assetid);
+      if (!cursor || cursors.has(cursor)) break;
+      cursors.add(cursor);
+    }
+    const snapshot = {
+      items: aggregateInventory(pages), pages: pages.length, truncated: truncated || more,
+      fetchedAt: new Date().toISOString(),
+    };
+    this.inventoryCache.set(steamId, snapshot, 60 * 1000);
+    return snapshot;
   }
 
   async search(appId, query, { limit = 8, refresh = false } = {}) {

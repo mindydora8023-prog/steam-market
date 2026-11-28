@@ -2,9 +2,9 @@
 
 [English](README.en.md)
 
-**v0.6.0** · [![CI](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml/badge.svg)](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml) · [MIT](LICENSE)
+**v0.7.0** · [![CI](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml/badge.svg)](https://github.com/mindydora8023-prog/steam-market/actions/workflows/ci.yml) · [MIT](LICENSE)
 
-在同一个暗色交易终端查 Steam 社区市场的最低挂单、近期中位成交和成交量。对比四种定价策略，反推目标到手价，也可以把多种饰品放进批量清单，估算清仓时各币种的买家支付、手续费与到手金额。
+**卖卡功能**支持一键读取公开 Steam 卡牌库存，按游戏筛选并逐件估价。重复的卡牌会自动合并，估完可直接加入批量清单或导出定价表。单件查价也支持比较四种策略、反推到手价和查看近期行情。
 
 应用使用公开行情，运行只需 Node.js **18.17+**，零第三方运行时依赖。查价无需登录或提供 Steam 凭据，挂单和交易由你在 Steam 手动完成。界面适配桌面与手机。
 
@@ -30,6 +30,16 @@ pwsh -File .\scripts\open-app.ps1 -CheckOnly
 pwsh -File .\scripts\open-app.ps1 -BaseUrl https://example.org/steam/
 ```
 
+## 从公开库存估算卖卡收入
+
+1. 在 Steam 打开**个人资料 → 编辑个人资料 → 隐私设置**，将**库存**设为**公开**。详情见 [Steam 客服](https://help.steampowered.com/zh-cn/faqs/view/588C-C67D-0251-C276)。
+2. 在助手页头打开**卡牌库存**，粘贴 17 位 SteamID64 或 Steam 个人主页链接，点击**读取公开库存**。支持 `/profiles/…` 和 `/id/…`。如果自定义链接解析失败，可以直接填 SteamID64。默认只读可上架卡牌，可勾选背景、表情及其他可上架社区物品。每次最多读取 5 页、1000 个库存条目，超过时会提示。
+3. 按游戏或闪卡筛选，勾选要估价的物品，再点**开始逐件估价**。工具按读取库存时的币种、费率与降价幅度，使用智能推荐价逐件估算。可以暂停或取消剩余请求。Steam 限流时，工具会暂停并保留已完成的报价，倒计时结束后可继续。
+4. **高价 / 闪卡**适合单独核对。高价依据各币种的固定到手阈值，例如 CNY 7 元、USD 1 美元、JPY 150 日元。**常规可出**有活跃挂单且近期成交量达到 10。触及手续费底线、缺少活跃挂单或成交量低于 10 的物品归入**低价 / 薄量**。成交量采用 Steam 行情返回的近期数据。
+5. 导入全部勾选项、仅已估价项、仅常规卡或仅高价卡和闪卡。清单会保留数量和币种，待估价项可手填买家价，也可回到库存继续估价，补上行情时不会重复加入数量。还可在库存面板直接导出勾选且已估价的物品。
+
+读取库存和估价都只使用公开数据，无需登录、Steam Cookie 或 API 密钥。上架时请在 Steam 核对费用并手动确认。
+
 ## 查价与批量估价
 
 1. 选择游戏和币种，再输入物品名或粘贴 Steam 市场链接。链接会自动识别游戏和完整市场名，也支持自定义 App ID。
@@ -40,7 +50,7 @@ pwsh -File .\scripts\open-app.ps1 -BaseUrl https://example.org/steam/
 ### 批量清单
 
 1. 查价后点击**加入清单**，沿用当前数量。也可以点收藏物品旁的 **+**，按收藏币种获取报价并加入 1 件。页头的**批量清单**随时可打开。
-2. 设置统一挂单策略，或为单行输入自定义买家价。清空该行价格即可恢复跟随策略。每行保留加入时的行情、降价幅度和费率。相同物品、游戏和币种再次加入时会累加数量、更新行情和费率，并保留手填价格。清单最多 100 行，每行最多 10000 件。
+2. 设置统一挂单策略，或为单行输入自定义买家价。清空该行价格即可恢复跟随策略。每行保留加入时的行情、降价幅度和费率。相同物品、游戏和币种再次加入时会累加数量、更新行情和费率，并保留手填价格。清单最多 1000 行，每行最多 10000 件。
 3. 查看总件数和各币种的买家支付、Steam 手续费、发行商手续费、手续费合计与预计到手。先算每件费用，再乘数量。切换策略或修改数量会立即更新汇总。遇到无效输入或无法估价的物品，界面会标出原因。
 4. 选择**复制 Markdown 清单**或**导出 CSV 定价表**。两种格式都包含物品、游戏 App ID、币种、数量、单件挂单价、单件到手、到手小计、两项手续费及方案。Markdown 还附带按币种分组的汇总。CSV 使用 UTF-8 BOM，金额用小数点，币种单列。
 5. 可移除单行，或清空后立即撤销。清单、收藏、历史与设置保存在浏览器的 `localStorage`。浏览器限制存储时，清单会给出提示，并可在当前页面继续编辑和导出。
@@ -132,7 +142,7 @@ npm run check
 
 两项命令可离线运行。GitHub Actions 在 Ubuntu 和 Windows 上使用 Node.js 20、22、24 执行这两项检查。Windows 启动脚本测试需要 PowerShell 7（`pwsh`）。
 
-浏览器回归使用离线行情和 Playwright Core，覆盖查价、收藏、清单、剪贴板与下载、图表、失败恢复和窄屏布局。可指定现有 Playwright Core 的 `index.mjs`（`PLAYWRIGHT_MODULE`），或临时安装测试工具。
+浏览器回归使用离线行情和 Playwright Core，覆盖查价、收藏、库存读取与串行估价、清单、剪贴板与下载、图表、失败恢复和窄屏布局。可指定现有 Playwright Core 的 `index.mjs`（`PLAYWRIGHT_MODULE`），或临时安装测试工具。
 
 ```sh
 npm install --no-save --package-lock=false playwright-core

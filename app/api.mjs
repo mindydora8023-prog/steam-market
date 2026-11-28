@@ -1,5 +1,6 @@
 import { CURRENCIES, currencyCode, currencyInfo, formatMinor } from '../lib/currency.js';
 import { marketMinimumFor, normalizeWallet } from '../lib/fees.js';
+import { parseSteamProfile } from '../lib/inventory.js';
 import { buildQuote, QUOTE_STRATEGIES } from '../lib/quote.js';
 import { findExactSearchResult, MarketError } from './steam.mjs';
 
@@ -206,9 +207,11 @@ export function createApi({ steam, version }) {
       wallet_publisher_fee_percent_default: publisherFee / 100,
     });
 
-    // Start independent lookups together; optional metadata failures do not hide a valid quote.
-    const searchPromise = steam.search(appId, name, { limit: 8, refresh })
-      .then((value) => ({ value }), (error) => ({ error }));
+    // Inventory already has the canonical hash name and needs only one price lookup.
+    const exactOnly = boolParam(url, 'exact');
+    const searchPromise = exactOnly ? Promise.resolve({ value: { results: [] } }) :
+      steam.search(appId, name, { limit: 8, refresh })
+        .then((value) => ({ value }), (error) => ({ error }));
     let price = await steam.price(appId, name, currency, { refresh });
     let searchResults = [];
     let exact = null;
@@ -445,6 +448,18 @@ export function createApi({ steam, version }) {
         });
       }
 
+      if (url.pathname === '/api/inventory') {
+        const steamId = stringParam(url, 'steamId', { max: 500 });
+        const onlyCards = url.searchParams.get('onlyCards') ?? '1';
+        if (url.searchParams.getAll('steamId').length !== 1 ||
+            url.searchParams.getAll('onlyCards').length > 1 ||
+            !parseSteamProfile(steamId) || !['0', '1'].includes(onlyCards)) {
+          throw badRequest('Invalid inventory parameters.');
+        }
+        const inventory = await steam.inventory(steamId, { onlyCards: onlyCards === '1' });
+        return sendJson(res, 200, { ok: true, ...inventory });
+      }
+
       if (url.pathname === '/api/quote') {
         return await quoteHandler(url, res);
       }
@@ -455,6 +470,20 @@ export function createApi({ steam, version }) {
 
       return sendJson(res, 404, errorBody('not-found', 'Unknown API route.'));
     } catch (err) {
+      if (url.pathname === '/api/inventory') {
+        const errors = {
+          'bad-request': [400, 'Invalid Steam profile or inventory parameters.'],
+          'inventory-private': [403, 'Steam inventory is private.'],
+          'inventory-empty': [200, 'No marketable items match this inventory filter.'],
+          'inventory-profile-unavailable': [404, 'Steam profile could not be resolved.'],
+          'rate-limited': [429, 'Steam is rate limiting requests.'],
+        };
+        const code = err instanceof MarketError && Object.hasOwn(errors, err.code) ? err.code : 'inventory-upstream';
+        const [status, message] = errors[code] || [502, 'Steam inventory is temporarily unavailable.'];
+        return sendJson(res, status, {
+          ok: false, error: { code, message, retryAfterMs: code === 'rate-limited' ? err.retryAfterMs : 0 },
+        });
+      }
       const status = err instanceof MarketError ? err.status || 502 : 500;
       const code = err && err.code ? err.code : 'internal';
       const message = err && err.message ? err.message : 'Internal server error.';

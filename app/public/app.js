@@ -13,6 +13,7 @@ import {
   marketMinimumFor,
 } from './ui-utils.js';
 import { createBatch } from './batch-ui.js';
+import { createInventory } from './inventory-ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -583,13 +584,14 @@ function renderQuote(quote, options = {}) {
   }
 }
 
-function requestQuote({ appId, name, currency, strategy, undercut, steamFee, publisherFee }, { signal, refresh = false } = {}) {
+function requestQuote({ appId, name, currency, strategy, undercut, steamFee, publisherFee }, { signal, refresh = false, exact = false } = {}) {
   const params = new URLSearchParams({
     appid: String(appId), name, currency: String(currency), strategy,
     undercut: String(undercut), steamFee: String(steamFee), publisherFee: String(publisherFee),
     refresh: refresh ? '1' : '0',
   });
-  return fetchJson(`./api/quote?${params.toString()}`, { signal, timeoutMs: 65000 });
+  if (exact) params.set('exact', '1');
+  return fetchJson(`./api/quote?${params.toString()}`, { signal, timeoutMs: 65000, credentials: exact ? 'omit' : 'same-origin' });
 }
 
 async function calculate({ refresh = false } = {}) {
@@ -2095,7 +2097,7 @@ function bind() {
   });
   document.addEventListener('keydown', (event) => {
     const editing = /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || event.target.isContentEditable;
-    if (event.key === '/' && !$('batch-dialog').open && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $('item-name').focus(); }
+    if (event.key === '/' && !$('batch-dialog').open && !$('inventory-dialog').open && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $('item-name').focus(); }
   });
   window.addEventListener('storage', (event) => {
     if (event.key === STORAGE.history) renderHistory();
@@ -2196,6 +2198,7 @@ async function init() {
   await loadLocale();
   loadSettings();
   batch = createBatch({ t, toast, copyText, downloadCsv });
+  createInventory({ t, batch, downloadCsv, requestQuote, getSettings: () => state });
   bind();
   renderHistory();
   renderFavorites();

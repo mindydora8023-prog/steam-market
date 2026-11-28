@@ -129,8 +129,8 @@ test('large portfolio bounds keep every currency sum and serialized amount exact
   assert.equal(clean.rows.length, MAX_BATCH_ROWS);
   assert.equal(addBatchRow(clean.rows, rows.at(-1)).code, 'row-limit');
   const report = estimateBatch(clean);
-  assert.equal(report.groups[0].receive, 1000000000000000);
-  assert.equal(batchAmount(report.groups[0].receive, 23), '10000000000000.00');
+  assert.equal(report.groups[0].receive, 10000000000000000n);
+  assert.equal(batchAmount(report.groups[0].receive, 23), '100000000000000.00');
 });
 
 test('CSV escapes embedded delimiters and newlines, and neutralizes spreadsheet formulas', () => {

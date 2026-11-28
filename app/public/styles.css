@@ -1282,6 +1282,73 @@ input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 3px 
   #batch-count { display: none; }
 }
 
+/* ---------- Public card inventory ---------- */
+#inventory-open { flex: none; min-height: 36px; }
+.inventory-lookup, .inventory-filters, .inventory-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+}
+.inventory-lookup .field, .inventory-filters .field, .inventory-transfer .field {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.inventory-lookup input, .inventory-filters select, .inventory-transfer select { width: 100%; min-width: 0; }
+.inventory-check { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; }
+#inventory-dialog input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--blue);
+  flex: none;
+}
+#inventory-help { margin: 0 0 10px; }
+.inventory-status { color: var(--gold-text); overflow-wrap: anywhere; }
+.inventory-status:empty { display: none; }
+.inventory-metrics.batch-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 14px 0 10px; }
+.inventory-metrics dd { color: var(--text-strong); font-size: 16px; }
+#inventory-selection { margin: 8px 0 0; }
+#inventory-items { margin-top: 6px; }
+.inventory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 156px);
+  align-items: center;
+  gap: 6px 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.inventory-item { display: flex; align-items: center; min-height: 44px; gap: 9px; }
+.inventory-icon { flex: none; object-fit: contain; border-radius: var(--radius); }
+.inventory-item-copy, .inventory-price { min-width: 0; overflow-wrap: anywhere; }
+.inventory-item-copy > *, .inventory-price > * { display: block; }
+.inventory-price { text-align: right; }
+.inventory-tier[data-tier="review"] { color: var(--violet); }
+.inventory-tier[data-tier="regular"] { color: var(--green-text); }
+.inventory-tier[data-tier="thin"] { color: var(--gold-text); }
+.inventory-tier[data-tier="pending"] { color: var(--muted); }
+.inventory-progress { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 8px; margin-bottom: 8px; }
+.inventory-progress progress { width: 100%; height: 7px; accent-color: var(--blue); }
+#inventory-net:not(:empty) { font-size: 14px; font-variant-numeric: tabular-nums; }
+.inventory-actions { max-height: 55%; overflow: auto; }
+.inventory-actions .inventory-transfer { margin-top: 8px; }
+.inventory-actions .inventory-status:not(:empty) { margin-top: 6px; }
+.inventory-progress + .batch-exports > button { flex: 0 1 auto; }
+
+@media (max-width: 480px) {
+  .topbar-inner { gap: 6px; }
+  .brand .badge { display: none; }
+  .inventory-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .inventory-price { display: flex; flex-wrap: wrap; gap: 2px 8px; text-align: left; padding-left: 26px; }
+  .inventory-actions .inventory-transfer .field { flex-basis: 100%; }
+  .inventory-actions :is(.inventory-transfer, .batch-exports) { gap: 6px; }
+}
+@media (max-width: 365px) {
+  .topbar-inner { height: auto; min-height: 46px; padding-block: 6px; flex-wrap: wrap; }
+  .topbar-right { margin-left: auto; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
