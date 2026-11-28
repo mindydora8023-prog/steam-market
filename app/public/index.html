@@ -27,6 +27,7 @@
       </div>
       <div class="topbar-right">
         <span class="kbd-hint muted small" aria-hidden="true">按 <kbd>/</kbd> 聚焦查询</span>
+        <button id="batch-open" class="ghost" type="button" aria-haspopup="dialog">批量清单 <span id="batch-count" hidden></span></button>
         <div class="network" id="network" title="本地服务状态与连接模式配置，不代表已验证 Steam 连通">
           <span class="dot" id="network-dot"></span>
           <span id="network-text">连接中…</span>
@@ -205,6 +206,7 @@
             <span id="cache-badge" class="pill" hidden>缓存</span>
             <span id="updated" class="muted small"></span>
             <button id="favorite-quote" class="ghost" type="button" aria-pressed="false">收藏物品</button>
+            <button id="batch-add-quote" class="ghost" type="button" disabled>加入清单</button>
             <button id="share-quote" class="ghost" type="button">复制查询链接</button>
             <button id="refresh-quote" class="ghost" type="button">刷新</button>
             <details class="howto">
@@ -404,6 +406,70 @@
     <span class="dot-sep" aria-hidden="true"></span>
     <span>价格会变化，请刷新后再确认</span>
   </footer>
+
+
+  <dialog id="batch-dialog" class="batch-dialog" aria-labelledby="batch-title">
+    <div class="batch-shell">
+      <header class="batch-head">
+        <div>
+          <h2 id="batch-title">批量清单</h2>
+          <p id="batch-total-count" class="muted small" role="status"></p>
+        </div>
+        <button id="batch-close" class="ghost" type="button" autofocus>关闭</button>
+      </header>
+      <div class="batch-body">
+        <div class="batch-controls">
+          <label class="field">统一挂单策略
+            <select id="batch-strategy">
+              <option value="smart">智能推荐</option>
+              <option value="undercut">压最低价</option>
+              <option value="match">持平最低价</option>
+              <option value="median">参考中位价</option>
+            </select>
+          </label>
+          <button id="batch-clear" class="ghost" type="button" disabled>清空清单</button>
+        </div>
+        <p class="muted small batch-help">使用加入时的行情和费率估价。单独录入买家价后，该行使用自定义价格。</p>
+        <p id="batch-storage" class="batch-warning small" role="status" hidden>浏览器存储不可用，清单仅在当前页面保留。</p>
+        <p id="batch-empty" class="batch-empty muted">清单为空。查价后点「加入清单」，也可从收藏添加。</p>
+        <p id="batch-mixed" class="muted small" hidden>金额按币种分别汇总。</p>
+        <div id="batch-groups"></div>
+        <ul id="batch-rows" class="batch-rows" aria-label="清单物品"></ul>
+      </div>
+      <footer class="batch-foot">
+        <p id="batch-export-note" class="batch-warning small" role="status"></p>
+        <div class="batch-exports">
+          <button id="batch-copy" class="primary small" type="button" disabled>复制 Markdown 清单</button>
+          <button id="batch-download" class="ghost" type="button" disabled>导出 CSV 定价表</button>
+        </div>
+        <p id="batch-status" class="muted small" role="status"></p>
+      </footer>
+    </div>
+  </dialog>
+
+  <template id="batch-row-template">
+    <li class="batch-row">
+      <div class="batch-row-head">
+        <div>
+          <h3 class="batch-item-name"></h3>
+          <span class="batch-item-meta muted small"></span>
+        </div>
+        <button class="batch-remove ghost" type="button">移除</button>
+      </div>
+      <div class="batch-inputs">
+        <label class="field"><span>数量</span>
+          <input class="batch-quantity" type="number" inputmode="numeric" min="1" step="1">
+          <span class="batch-field-error"></span>
+        </label>
+        <label class="field"><span>自定义买家价</span>
+          <input class="batch-price" type="text" inputmode="decimal" maxlength="20" placeholder="留空跟随统一策略">
+          <span class="batch-field-error"></span>
+        </label>
+      </div>
+      <dl class="batch-metrics batch-line-prices"></dl>
+      <p class="batch-line-note muted small"></p>
+    </li>
+  </template>
 
   <div id="toast" class="toast" hidden role="status"></div>
 

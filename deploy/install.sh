@@ -31,7 +31,7 @@ NODE_OK="$("$NODE_BIN" -e 'const [a,b]=process.versions.node.split(".").map(Numb
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 mkdir -p "$APP_DIR"
 
-for p in app lib scripts docs test package.json README.md LICENSE; do
+for p in app lib scripts docs test package.json README.md README.en.md LICENSE; do
   [ -e "$PAYLOAD_DIR/$p" ] || continue
   rm -rf "$APP_DIR/$p"
   cp -a "$PAYLOAD_DIR/$p" "$APP_DIR/"

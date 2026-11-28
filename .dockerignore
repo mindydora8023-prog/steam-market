@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!package.json
+!app/
+!app/**
+!lib/
+!lib/**

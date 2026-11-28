@@ -5,6 +5,8 @@ import { serveStatic } from './static.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_URL_BYTES = 8192;
+const SHARED_MODULES = new Set(['batch.js', 'currency.js', 'fees.js', 'integer.js', 'quote.js']);
+const LIB_ROOT = path.join(APP_ROOT, 'lib');
 
 const CSP = [
   "default-src 'self'",
@@ -72,7 +74,10 @@ export function createApp({ steam, version, publicDir }) {
       return;
     }
 
-    const served = await serveStatic(req, res, url, publicDir);
+    const shared = url.pathname.startsWith('/shared/') && SHARED_MODULES.has(url.pathname.slice('/shared/'.length));
+    const served = shared
+      ? await serveStatic(req, res, new URL(url.pathname.slice('/shared'.length), url), LIB_ROOT)
+      : await serveStatic(req, res, url, publicDir);
     if (served) return;
 
     sendText(res, 405, 'Method not allowed', { Allow: 'GET, HEAD' });

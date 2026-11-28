@@ -6,10 +6,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createApp } from '../app/app.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const modulePath = process.env.PLAYWRIGHT_MODULE || path.resolve(root, '../.toolchain/ui-review/node_modules/playwright-core/index.mjs');
+const modulePath = process.env.PLAYWRIGHT_MODULE || path.join(root, 'node_modules/playwright-core/index.mjs');
 if (!fs.existsSync(modulePath)) throw new Error('Set PLAYWRIGHT_MODULE to an installed playwright-core index.mjs.');
 const { chromium } = await import(pathToFileURL(modulePath));
-const out = process.env.UI_EVIDENCE_DIR || path.resolve(root, '../.toolchain/out/steam-redesign-0.5.0');
+const out = process.env.UI_EVIDENCE_DIR || path.join(root, '.ui-evidence');
+const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 fs.mkdirSync(out, { recursive: true });
 let quoteCalls = 0;
 const item = { appId: 730, name: 'Clutch Case', hashName: 'Clutch Case', appName: 'Counter-Strike 2', type: 'Container', iconUrl: '', sellListings: 100 };
@@ -23,7 +24,7 @@ const steam = {
   },
 };
 const mount = '/steam/';
-const app = createApp({ steam, version: '0.5.1-test', publicDir: path.join(root, 'app/public') });
+const app = createApp({ steam, version, publicDir: path.join(root, 'app/public') });
 const server = http.createServer((req, res) => {
   if (!req.url.startsWith(mount)) {
     res.writeHead(404).end();
@@ -39,7 +40,7 @@ const errors = [];
 const checks = [];
 function pass(name) { checks.push(name); console.log('PASS ' + name); }
 try {
-  browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true, args: ['--use-mock-keychain', '--password-store=basic'] });
+  browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || (process.platform === 'win32' ? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' : undefined), headless: true, args: ['--use-mock-keychain', '--password-store=basic'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -63,7 +64,7 @@ try {
   await page.goto(base);
   assert.equal((await stylesheet).status(), 200);
   assert.ok(await page.locator('.brand-mark svg').evaluate((svg) => svg.getBoundingClientRect().width < 64));
-  await page.waitForFunction(() => document.querySelector('#version').textContent.includes('0.5.1'));
+  await page.waitForFunction((expected) => document.querySelector('#version').textContent.includes(expected), version);
   pass('stylesheet and health load through the reverse proxy prefix');
   await capture({ path: path.join(out, 'desktop-empty.png') });
   await page.click('#calculate');
@@ -155,6 +156,7 @@ try {
   await page.waitForSelector('#error-box[hidden]', { state: 'attached' });
   await page.waitForFunction(() => !document.querySelector('#calculate').disabled);
   await page.fill('#item-name', 'Clutch newer');
+  assert.equal(await page.isDisabled('#batch-add-quote'), true);
   assert.equal(await page.isDisabled('#copy-price'), true);
   await page.dispatchEvent('#copy-price', 'click');
   assert.match(await page.textContent('#toast'), /\u91cd\u65b0\u8ba1\u7b97/);
@@ -199,6 +201,109 @@ try {
   assert.match(await page.textContent('#suggestions'), /New response/);
   await page.unroute('**/api/search?**');
   pass('late autocomplete responses cannot replace a newer search');
+  const batchContext = await browser.newContext({
+    viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce',
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const batchPage = await batchContext.newPage();
+  batchPage.setDefaultTimeout(8000);
+  batchPage.on('pageerror', (error) => errors.push(error.message));
+  await batchPage.addInitScript(() => {
+    const key = 'steam-price-favorites-v1';
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify([{
+      appId: 730, name: 'Kilowatt Case', hashName: 'Kilowatt Case', currency: 8,
+    }]));
+  });
+  await batchPage.goto(base + '?name=Clutch%20Case&quantity=3&currency=23');
+  await batchPage.waitForSelector('#batch-add-quote:enabled');
+  await batchPage.click('#batch-open');
+  assert.equal(await batchPage.isVisible('#batch-empty'), true);
+  await batchPage.keyboard.press('Escape');
+  await batchPage.waitForFunction(() => document.activeElement.id === 'batch-open');
+  await batchPage.click('#batch-add-quote');
+  assert.equal(await batchPage.inputValue('.batch-quantity'), '3');
+  await batchPage.fill('.batch-price', '0.29');
+  await batchPage.fill('.batch-quantity', '2');
+  assert.deepEqual(await batchPage.locator('#batch-groups dd').allTextContents(), ['0.58', '0.28', '0.30', '0.14', '0.14']);
+  await batchPage.selectOption('#batch-strategy', 'median');
+  assert.match(await batchPage.textContent('.batch-line-prices'), /0\.29/);
+  await batchPage.fill('.batch-price', '');
+  assert.match(await batchPage.textContent('.batch-line-prices'), /3\.56/);
+  await batchPage.fill('.batch-price', '0.20');
+  assert.equal(await batchPage.isDisabled('#batch-copy'), true);
+  assert.match(await batchPage.textContent('.batch-line-note'), /0\.21 CNY/);
+  await batchPage.fill('.batch-price', '0.291');
+  assert.equal(await batchPage.getAttribute('.batch-price', 'aria-invalid'), 'true');
+  await batchPage.fill('.batch-price', '0.29');
+  await batchPage.fill('.batch-quantity', '');
+  assert.equal(await batchPage.isDisabled('#batch-download'), true);
+  await batchPage.fill('.batch-quantity', '2');
+  await batchPage.keyboard.press('Escape');
+  await batchPage.waitForFunction(() => document.activeElement.id === 'batch-add-quote');
+  pass('batch drawer preserves focus and calculates quantity, strategy and custom fee floors');
+
+  await batchPage.click('#favorites-list .side-action-batch');
+  await batchPage.waitForSelector('#batch-dialog[open]');
+  assert.equal(await batchPage.locator('.batch-row').count(), 2);
+  assert.equal(await batchPage.inputValue('#item-name'), 'Clutch Case');
+  assert.match(await batchPage.textContent('#batch-total-count'), /3/);
+  assert.equal(await batchPage.isVisible('#batch-mixed'), true);
+  assert.deepEqual((await batchPage.locator('.batch-currency h3').allTextContents()).map((text) => text.slice(0, 3)), ['CNY', 'JPY']);
+  await batchPage.click('#batch-copy');
+  const markdown = await batchPage.evaluate(() => navigator.clipboard.readText());
+  assert.match(markdown, /\| CNY \| 2 \| 0\.58/);
+  assert.match(markdown, /\| JPY \| 1 \|/);
+  const batchDownload = batchPage.waitForEvent('download');
+  await batchPage.click('#batch-download');
+  const file = await batchDownload;
+  assert.equal(file.suggestedFilename(), 'steam-market-batch.csv');
+  const csv = fs.readFileSync(await file.path(), 'utf8');
+  assert.match(csv, /^\ufeff"Item","App ID","Currency"/);
+  assert.match(csv, /"Clutch Case","730","CNY","2","0\.29","0\.15","0\.30","0\.14","0\.14","0\.28","custom"/);
+  assert.match(csv, /"Kilowatt Case","730","JPY","1"/);
+  pass('a legacy favorite adds directly and both exports preserve currency and pricing');
+
+  await batchPage.click('#batch-clear');
+  assert.equal(await batchPage.locator('.batch-row').count(), 0);
+  assert.equal(await batchPage.isDisabled('#batch-download'), true);
+  await batchPage.click('#batch-clear');
+  assert.equal(await batchPage.locator('.batch-row').count(), 2);
+  await batchPage.reload();
+  await batchPage.click('#batch-open');
+  assert.equal(await batchPage.locator('.batch-row').count(), 2);
+  assert.equal(await batchPage.inputValue('#batch-strategy'), 'median');
+  assert.equal(await batchPage.locator('.batch-price').first().inputValue(), '0.29');
+  assert.equal(await batchPage.locator('.batch-quantity').first().inputValue(), '2');
+  pass('batch clear can be undone and saved quantities, prices and strategy survive reload');
+
+  await batchPage.screenshot({ path: path.join(out, 'batch-desktop.png') });
+  for (const width of [320, 390, 720]) {
+    await batchPage.setViewportSize({ width, height: 844 });
+    assert.ok(await batchPage.evaluate(() => {
+      const dialog = document.querySelector('#batch-dialog');
+      const body = dialog.querySelector('.batch-body');
+      return Math.max(dialog.scrollWidth, body.scrollWidth, document.documentElement.scrollWidth) <= innerWidth + 1 &&
+        document.querySelector('#batch-download').getBoundingClientRect().bottom <= innerHeight;
+    }), 'batch horizontal overflow or inaccessible exports at ' + width);
+    if (width === 390) await batchPage.screenshot({ path: path.join(out, 'batch-mobile.png') });
+  }
+  await batchPage.setViewportSize({ width: 1440, height: 1000 });
+  await batchPage.evaluate(() => { document.documentElement.style.zoom = '2'; });
+  assert.ok(await batchPage.evaluate(() => {
+    const dialog = document.querySelector('#batch-dialog');
+    const body = dialog.querySelector('.batch-body');
+    return body.scrollWidth <= body.clientWidth + 1 && dialog.getBoundingClientRect().left >= -1 &&
+      document.querySelector('#batch-download').getBoundingClientRect().bottom <= innerHeight + 1;
+  }), 'batch layout at 200% zoom');
+  await batchPage.locator('.batch-remove').last().click();
+  assert.equal(await batchPage.locator('.batch-row').count(), 1);
+  assert.equal(await batchPage.isVisible('#batch-mixed'), false);
+  await batchPage.reload();
+  await batchPage.click('#batch-open');
+  assert.equal(await batchPage.locator('.batch-row').count(), 1);
+  await batchContext.close();
+  pass('batch dialog fits narrow viewports and zoom; removing a row persists');
+
   const blocked = await context.newPage();
   await blocked.addInitScript(() => { Storage.prototype.setItem = function () { throw new DOMException('Storage blocked', 'SecurityError'); }; });
   blocked.on('pageerror', (error) => errors.push(error.message));
@@ -206,8 +311,13 @@ try {
   await blocked.waitForFunction(() => !document.querySelector('#calculate').disabled && !document.querySelector('#result').hidden);
   await blocked.click('#favorite-quote');
   assert.match(await blocked.textContent('#toast'), /\u5b58\u50a8\u4e0d\u53ef\u7528/);
+  await blocked.click('#batch-add-quote');
+  await blocked.waitForSelector('#batch-dialog[open]');
+  assert.equal(await blocked.locator('.batch-row').count(), 1);
+  assert.equal(await blocked.isVisible('#batch-storage'), true);
+  assert.equal(await blocked.isEnabled('#batch-copy'), true);
   await blocked.close();
-  pass('blocked local storage reports save failure without crashing');
+  pass('blocked local storage keeps the batch usable and reports save failures');
   await page.fill('#item-name', 'Clutch Case');
   await page.click('#calculate');
   await page.waitForFunction(() => !document.querySelector('#calculate').disabled);

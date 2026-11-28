@@ -1,6 +1,6 @@
 {
   "name": "steam-market-price",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Local read-only Steam market price calculator.",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node app/server.mjs",
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test",
     "check": "node scripts/check.mjs",
     "test:ui": "node scripts/browser-smoke.mjs"
   }

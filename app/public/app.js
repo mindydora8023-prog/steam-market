@@ -12,6 +12,7 @@ import {
   movingAverage,
   marketMinimumFor,
 } from './ui-utils.js';
+import { createBatch } from './batch-ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -89,6 +90,8 @@ const state = {
   favFilter: 'all',
   customQuote: null,
 };
+
+let batch;
 
 function t(key, vars = {}) {
   let text = state.locale[key] || key;
@@ -215,6 +218,7 @@ function setBusy(busy) {
   $('quote-form').setAttribute('aria-busy', busy ? 'true' : 'false');
   $('query-status').hidden = !busy;
   $('refresh-quote').disabled = busy || state.cooldownUntil > Date.now();
+  $('batch-add-quote').disabled = !quoteIsCurrent();
   $('query-status-text').textContent = t('loadingQuote');
   for (const id of ['copy-price', 'copy-receive', 'share-quote', 'favorite-quote', 'copy-custom-buyer', 'copy-custom-receive']) {
     if ($(id)) $(id).setAttribute('aria-disabled', String(!quoteIsCurrent()));
@@ -579,6 +583,15 @@ function renderQuote(quote, options = {}) {
   }
 }
 
+function requestQuote({ appId, name, currency, strategy, undercut, steamFee, publisherFee }, { signal, refresh = false } = {}) {
+  const params = new URLSearchParams({
+    appid: String(appId), name, currency: String(currency), strategy,
+    undercut: String(undercut), steamFee: String(steamFee), publisherFee: String(publisherFee),
+    refresh: refresh ? '1' : '0',
+  });
+  return fetchJson(`./api/quote?${params.toString()}`, { signal, timeoutMs: 65000 });
+}
+
 async function calculate({ refresh = false } = {}) {
   if (state.cooldownUntil > Date.now()) {
     toast(t('retryAfter', { seconds: Math.ceil((state.cooldownUntil - Date.now()) / 1000) }));
@@ -617,17 +630,7 @@ async function calculate({ refresh = false } = {}) {
   setBusy(true);
 
   try {
-    const params = new URLSearchParams({
-      appid: String(state.appId),
-      name,
-      currency: String(state.currency),
-      strategy: state.strategy,
-      undercut: String(state.undercut),
-      steamFee: String(state.steamFee),
-      publisherFee: String(state.publisherFee),
-      refresh: refresh ? '1' : '0',
-    });
-    const data = await fetchJson(`./api/quote?${params.toString()}`, { signal: controller.signal, timeoutMs: 65000 });
+    const data = await requestQuote({ ...state, name }, { signal: controller.signal, refresh });
     if (controller.signal.aborted || state.quoteAbort !== controller || contextKey() !== requestContext) return;
 
     if (data && data.ok) {
@@ -991,7 +994,7 @@ function renderHistory() {
   }
 }
 
-async function copyText(text, message) {
+async function copyText(text, message, { container = document.body, notice = toast } = {}) {
   if (!text) return;
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Use fallback');
@@ -1001,15 +1004,15 @@ async function copyText(text, message) {
     const helper = document.createElement('textarea');
     helper.value = text;
     helper.className = 'copy-helper';
-    document.body.appendChild(helper);
+    container.appendChild(helper);
     helper.select();
     let copied = false;
     try { copied = document.execCommand('copy'); } catch { /* Report below. */ }
     helper.remove();
     active?.focus({ preventScroll: true });
-    if (!copied) { toast(t('copyFailed')); return; }
+    if (!copied) { notice(t('copyFailed')); return; }
   }
-  toast(message || t('copiedToast', { price: text }));
+  notice(message || t('copiedToast', { price: text }));
 }
 
 function copyPrice(kind = 'buyerPays') {
@@ -1180,6 +1183,44 @@ function removeFavoriteEntry(target) {
   toast(t('favoriteRemoved'));
 }
 
+async function addFavoriteToBatch(entry, button) {
+  if (button.getAttribute('aria-disabled') === 'true') return;
+  if (state.cooldownUntil > Date.now()) {
+    toast(t('retryAfter', { seconds: Math.ceil((state.cooldownUntil - Date.now()) / 1000) }));
+    return;
+  }
+  const settings = {
+    appId: entry.appId,
+    name: entry.hashName,
+    currency: optionHas($('currency-select'), entry.currency) ? Number(entry.currency) : state.currency,
+    strategy: 'median',
+    undercut: state.undercut,
+    steamFee: state.steamFee,
+    publisherFee: state.publisherFee,
+  };
+  button.setAttribute('aria-disabled', 'true');
+  toast(t('batchFavoriteLoading'));
+  try {
+    const quote = await requestQuote(settings);
+    if (quote?.ok) {
+      batch.add(quote, settings, 1, button);
+    } else {
+      const error = quote?.error;
+      if (error?.code === 'rate-limited') {
+        const delay = Math.max(1000, Number(error.retryAfterMs) || 60000);
+        beginCooldown(delay);
+        toast(t('retryAfter', { seconds: Math.ceil(delay / 1000) }));
+      } else {
+        toast(t(ERROR_KEYS[error?.code] || 'batchNoQuote'));
+      }
+    }
+  } catch (error) {
+    toast(t(error.name === 'TimeoutError' ? 'requestTimeout' : 'errorUpstream'));
+  } finally {
+    button.removeAttribute('aria-disabled');
+  }
+}
+
 function renderFavorites() {
   const raw = readFavorites();
   const entries = raw.slice().sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
@@ -1220,7 +1261,7 @@ function renderFavorites() {
 
   for (const entry of visible) {
     const row = document.createElement('div');
-    row.className = 'side-item-row' + (entry.pinned ? ' pinned' : '');
+    row.className = 'side-item-row favorite-row' + (entry.pinned ? ' pinned' : '');
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -1268,7 +1309,15 @@ function renderFavorites() {
     delBtn.setAttribute('aria-label', t('removeItem') + ' ' + (entry.name || entry.hashName));
     delBtn.addEventListener('click', (event) => { event.stopPropagation(); removeFavoriteEntry(entry); });
 
-    actions.append(pinBtn, delBtn);
+    const batchBtn = document.createElement('button');
+    batchBtn.type = 'button';
+    batchBtn.className = 'side-action side-action-batch';
+    batchBtn.textContent = '+';
+    batchBtn.title = t('batchFavoriteAdd');
+    batchBtn.setAttribute('aria-label', t('batchFavoriteAdd') + ' ' + (entry.name || entry.hashName));
+    batchBtn.addEventListener('click', () => addFavoriteToBatch(entry, batchBtn));
+
+    actions.append(batchBtn, pinBtn, delBtn);
     row.append(button, actions);
     box.appendChild(row);
   }
@@ -1294,15 +1343,21 @@ function renderChartTable() {
   }
 }
 
+function downloadCsv(text, filename) {
+  const blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function exportHistory() {
   const points = chartPoints();
   if (!points.length || !state.history) return;
   const rows = [['date', 'price', 'currency', 'volume', 'estimated'], ...points.map((point) => [new Date(point.time * 1000).toISOString().slice(0, 10), priceNumber(point.value, state.history.currency), state.history.currencyCode, point.volume || 0, Boolean(state.history.converted)])];
-  const blob = new Blob(['\ufeff' + rows.map((row) => row.join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a'); link.href = url;
-  link.download = 'steam-market-' + state.historyDays + 'd.csv';
-  link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadCsv(rows.map((row) => row.join(',')).join('\r\n'), 'steam-market-' + state.historyDays + 'd.csv');
 }
 
 function scheduleRecalc() {
@@ -1954,6 +2009,10 @@ function bind() {
     copyText(window.location.href, t('linkCopied'));
   });
   $('favorite-quote').addEventListener('click', toggleFavorite);
+  $('batch-add-quote').addEventListener('click', (event) => {
+    if (!quoteIsCurrent()) { toast(t('staleCopy')); return; }
+    batch.add(state.quote, state, state.quantity, event.currentTarget);
+  });
   $('quantity').addEventListener('input', () => {
     state.quantity = clamp(Math.trunc(num($('quantity').value, 1)), 1, 10000);
     renderQuantity(); saveSettings(); updateQueryUrl();
@@ -2036,7 +2095,7 @@ function bind() {
   });
   document.addEventListener('keydown', (event) => {
     const editing = /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || event.target.isContentEditable;
-    if (event.key === '/' && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $('item-name').focus(); }
+    if (event.key === '/' && !$('batch-dialog').open && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $('item-name').focus(); }
   });
   window.addEventListener('storage', (event) => {
     if (event.key === STORAGE.history) renderHistory();
@@ -2136,6 +2195,7 @@ function renderQuickExamples() {
 async function init() {
   await loadLocale();
   loadSettings();
+  batch = createBatch({ t, toast, copyText, downloadCsv });
   bind();
   renderHistory();
   renderFavorites();

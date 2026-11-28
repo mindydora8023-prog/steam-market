@@ -93,6 +93,21 @@ test('URL budget rejects before parsing or dispatch and preserves security heade
   }
 });
 
+
+test('browser can load only the allowlisted shared modules', async (t) => {
+  const app = await fixture(t);
+  for (const name of ['batch.js', 'currency.js', 'fees.js', 'integer.js', 'quote.js']) {
+    const res = await app.get('/shared/' + name);
+    assert.equal(res.status, 200, name);
+    assert.match(res.headers.get('content-type'), /javascript/);
+    assert.ok((await res.text()).length > 0);
+    security(res);
+  }
+  for (const route of ['/shared/http.js', '/shared/cookies.js', '/shared/..%2fserver.mjs', '/lib/batch.js']) {
+    assert.equal((await app.get(route)).status, 404, route);
+  }
+});
+
 test('health exposes stable identity, root, version and process for launch checks', async (t) => {
   const app = await fixture(t);
   const res = await app.get('/api/health');
